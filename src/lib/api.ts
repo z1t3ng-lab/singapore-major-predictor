@@ -1,4 +1,4 @@
-import type { Overview, Team, TournamentResult } from "./types";
+import type { MatchResultConflict, Overview, Team, TournamentResult } from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -10,9 +10,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    throw new Error(body.detail ?? `API request failed (${response.status})`);
+    const detail = body.detail;
+    const message = typeof detail === "string" ? detail : detail?.message ?? `API request failed (${response.status})`;
+    throw new ApiError(message, response.status, detail);
   }
   return response.json() as Promise<T>;
+}
+
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number, readonly detail?: unknown) {
+    super(message);
+    this.name = "ApiError";
+  }
 }
 
 export const getOverview = () => request<Overview>("/api/overview");
@@ -29,6 +38,39 @@ export function runSimulation(input: {
     method: "POST",
     body: JSON.stringify(input),
   });
+}
+
+export type MatchResultInput = {
+  winner_id?: string | null;
+  score?: string | null;
+  expected_result_version: number;
+  invalidate_conflict_ids?: string[];
+};
+
+export type MatchResultResponse = {
+  message: string;
+  result: TournamentResult;
+  invalidated_result_ids: string[];
+};
+
+export async function saveMatchResult(matchId: string, input: MatchResultInput) {
+  return request<MatchResultResponse>(`/api/matches/${encodeURIComponent(matchId)}/result`, {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function clearMatchResult(matchId: string, input: MatchResultInput) {
+  return request<MatchResultResponse>(`/api/matches/${encodeURIComponent(matchId)}/result`, {
+    method: "DELETE",
+    body: JSON.stringify(input),
+  });
+}
+
+export function resultConflictsFromError(error: unknown): MatchResultConflict[] | null {
+  if (!(error instanceof ApiError) || error.status !== 409 || !error.detail || typeof error.detail !== "object") return null;
+  const conflicts = (error.detail as { conflicts?: unknown }).conflicts;
+  return Array.isArray(conflicts) ? conflicts as MatchResultConflict[] : null;
 }
 
 export function getMatchDetail(input: {

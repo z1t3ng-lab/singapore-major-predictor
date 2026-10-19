@@ -62,10 +62,22 @@ export type PredictedMatch = {
   best_of: number;
   status: "completed_result" | "predicted";
   fixture_confirmed: boolean;
+  fixture_type?: "official" | "generated";
+  pairing_status?: "official_fixture" | "provisional_pairing";
   outcome_source: string;
   forced_rematch?: boolean;
   prediction: Prediction;
   score?: string | null;
+  confirmed_winner_id?: string | null;
+  confirmed_score?: string | null;
+  result_status?: "pending" | "confirmed" | "cleared" | "invalidated";
+  result_source?: string | null;
+  result_version?: number;
+  result_created_at?: string | null;
+  result_updated_at?: string | null;
+  original_prediction?: Prediction | null;
+  original_prediction_at?: string | null;
+  prediction_version?: string | null;
 };
 
 export type StageRound = {
@@ -99,6 +111,7 @@ export type TeamProbabilities = {
 
 export type TournamentResult = {
   run_id: string;
+  state_version?: number;
   cutoff: string;
   simulations: number;
   seed: number;
@@ -120,6 +133,19 @@ export type TournamentResult = {
   };
   sampling_uncertainty: string;
   assumptions: string[];
+};
+
+export type MatchResultConflict = {
+  id: string;
+  stage_slug: string;
+  round_no: number;
+  team_a_id: string;
+  team_b_id: string;
+  winner_id?: string | null;
+  team_a_name: string;
+  team_b_name: string;
+  winner_name?: string | null;
+  can_invalidate: boolean;
 };
 
 export type Overview = {
