@@ -33,11 +33,20 @@ def initialize_database() -> None:
         connection.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(1, ?)", (utc_now(),)
         )
-        for version, filename in ((2, "002_map_vetoes.sql"), (3, "003_roster_availability.sql")):
+        for version, filename in (
+            (2, "002_map_vetoes.sql"),
+            (3, "003_roster_availability.sql"),
+            (4, "004_confirmed_match_results.sql"),
+        ):
             migration_path = DATA_DIR / "migrations" / filename
             if version == 3:
                 columns = {row["name"] for row in connection.execute("PRAGMA table_info(roster_memberships)")}
                 if "available_at" not in columns:
+                    connection.executescript(migration_path.read_text(encoding="utf-8"))
+            elif version == 4:
+                match_columns = {row["name"] for row in connection.execute("PRAGMA table_info(matches)")}
+                run_columns = {row["name"] for row in connection.execute("PRAGMA table_info(prediction_runs)")}
+                if "fixture_type" not in match_columns or "result_json" not in run_columns:
                     connection.executescript(migration_path.read_text(encoding="utf-8"))
             else:
                 connection.executescript(migration_path.read_text(encoding="utf-8"))
@@ -59,6 +68,7 @@ def initialize_database() -> None:
                 "active_data_source": "Awaiting official participant list",
                 "is_synthetic": "false",
                 "demo_opt_in": "false",
+                "tournament_state_version": "0",
                 "event_notes": json.dumps([
                     "The official PGL Major Singapore 2026 participant list has not been published as of October 19, 2026.",
                     "The invite tracker lists a November 2 Valve Regional Standings cutoff; team identities remain unconfirmed until invitations are announced.",
@@ -160,6 +170,16 @@ def _remove_legacy_automatic_demo(connection: sqlite3.Connection) -> None:
 
 def get_metadata(connection: sqlite3.Connection) -> dict[str, str]:
     return {row["key"]: row["value"] for row in connection.execute("SELECT key,value FROM metadata")}
+
+
+def state_version(connection: sqlite3.Connection) -> int:
+    return int(get_metadata(connection).get("tournament_state_version", "0"))
+
+
+def bump_state_version(connection: sqlite3.Connection) -> int:
+    next_version = state_version(connection) + 1
+    _set_metadata(connection, {"tournament_state_version": str(next_version)})
+    return next_version
 
 
 def as_dicts(rows: Any) -> list[dict[str, Any]]:

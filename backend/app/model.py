@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from math import exp
 from typing import Any
 
 import numpy as np
@@ -104,15 +105,36 @@ def _metrics(actual: list[int], probabilities: list[float]) -> dict[str, float]:
 
 
 def build_model_snapshot(
-    team_list: list[dict[str, Any]], matches: list[dict[str, Any]], cutoff: str
+    team_list: list[dict[str, Any]],
+    matches: list[dict[str, Any]],
+    cutoff: str,
+    model_state: dict[str, Any] | None = None,
+    allow_training: bool = True,
 ) -> dict[str, Any]:
     teams = {team["id"]: team for team in team_list}
     features, outcomes, ratings, counts = _chronological_rows(teams, matches, cutoff)
-    model = None
+    coefficients: list[float] | None = None
+    intercept: float | None = None
     metrics: dict[str, float] = {}
     status = "baseline_only"
     model_name = "Interpretable Elo + context priors"
-    if len(outcomes) >= 200:
+    trained_cutoff = cutoff
+    if model_state and model_state.get("status") == "trained_chronological_split":
+        try:
+            candidate = [float(value) for value in model_state["coefficients"]]
+            candidate_intercept = float(model_state["intercept"])
+            if len(candidate) != 2:
+                raise ValueError("Expected two model coefficients.")
+            coefficients = candidate
+            intercept = candidate_intercept
+            metrics = dict(model_state.get("metrics") or {})
+            status = "trained_chronological_split"
+            model_name = str(model_state.get("name") or "Logistic regression (Elo + format) with context priors")
+            trained_cutoff = str(model_state.get("trained_cutoff") or cutoff)
+        except (KeyError, TypeError, ValueError):
+            coefficients = None
+            intercept = None
+    elif allow_training and len(outcomes) >= 200:
         try:
             from sklearn.linear_model import LogisticRegression
 
@@ -124,8 +146,11 @@ def build_model_snapshot(
                 metrics = _metrics(outcomes[split:], validation_probabilities)
                 status = "trained_chronological_split"
                 model_name = "Logistic regression (Elo + format) with context priors"
+                coefficients = [float(value) for value in model.coef_[0]]
+                intercept = float(model.intercept_[0])
         except (ImportError, ValueError):
-            model = None
+            coefficients = None
+            intercept = None
 
     def predictor(team_a: dict[str, Any], team_b: dict[str, Any], best_of: int) -> dict[str, Any]:
         # Swiss entrant records carry stage-specific seeds; merge in the shared
@@ -133,8 +158,9 @@ def build_model_snapshot(
         team_a = {**teams.get(team_a["id"], {}), **team_a}
         team_b = {**teams.get(team_b["id"], {}), **team_b}
         prediction = predict_match(team_a, team_b, best_of, ratings, counts)
-        if model is not None:
-            base_p = float(model.predict_proba([[prediction["rating_difference"], 1.0 if best_of >= 3 else 0.0]])[0][1])
+        if coefficients is not None and intercept is not None:
+            linear_predictor = intercept + coefficients[0] * prediction["rating_difference"] + coefficients[1] * (1.0 if best_of >= 3 else 0.0)
+            base_p = 1.0 / (1.0 + exp(-max(-700.0, min(700.0, linear_predictor))))
             p = series_probability_with_map_context(base_p, best_of, prediction["context_log_odds"])
             prediction.update({
                 "team_a_probability": p,
@@ -153,7 +179,9 @@ def build_model_snapshot(
 
     if len(outcomes) < 200:
         status_message = f"Only {len(outcomes)} eligible completed matches are available; 200 are required before training."
-    elif model is None:
+    elif not allow_training:
+        status_message = "Model fitting was skipped during this result update; current Elo inputs and the existing baseline were used."
+    elif coefficients is None:
         status_message = "The optional scikit-learn dependency or a valid chronological split is unavailable; using Elo."
     else:
         status_message = "A chronological held-out evaluation was completed; the trained model is active."
@@ -167,4 +195,13 @@ def build_model_snapshot(
         "eligible_matches": len(outcomes),
         "metrics": metrics,
         "metrics_scope": "Elo + series format model before context priors" if metrics else None,
+        "trained_cutoff": trained_cutoff if status == "trained_chronological_split" else None,
+        "state": {
+            "status": status,
+            "name": model_name,
+            "coefficients": coefficients,
+            "intercept": intercept,
+            "metrics": metrics,
+            "trained_cutoff": trained_cutoff if status == "trained_chronological_split" else None,
+        },
     }

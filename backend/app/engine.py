@@ -4,10 +4,86 @@ from __future__ import annotations
 
 from collections import defaultdict
 from copy import deepcopy
+import json
 from math import comb, exp, log, sqrt
 from typing import Any, Callable, Iterable
 
 from .feature_engineering import compare_team_signals
+
+
+class MatchDependencyConflict(ValueError):
+    """Confirmed generated results that no longer belong to the projected path."""
+
+    def __init__(self, conflicts: list[dict[str, Any]]):
+        self.conflicts = conflicts
+        super().__init__("One or more later confirmed results no longer match the tournament path.")
+
+
+def _confirmed_winner(match: dict[str, Any] | None) -> str | None:
+    if not match or match.get("result_status") in ("cleared", "invalidated"):
+        return None
+    winner = match.get("confirmed_winner_id") or match.get("winner_id")
+    if match.get("confirmed_winner_id"):
+        return str(match["confirmed_winner_id"])
+    if winner and match.get("status") == "completed":
+        return str(winner)
+    return None
+
+
+def _original_prediction(match: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not match:
+        return None
+    value = match.get("original_prediction")
+    if isinstance(value, dict):
+        return value
+    raw = match.get("original_prediction_json")
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _actual_score(match: dict[str, Any] | None) -> str | None:
+    if not match or match.get("result_status") in ("cleared", "invalidated"):
+        return None
+    if match.get("confirmed_score") is not None:
+        return str(match["confirmed_score"])
+    # A manual edit with no score must not leak an old imported score.
+    if match.get("result_source") == "manual":
+        return None
+    return match.get("score")
+
+
+def _dependency_conflict(match: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(match["id"]),
+        "stage_slug": match.get("stage_slug"),
+        "round_no": match.get("round_no"),
+        "team_a_id": match.get("team_a_id"),
+        "team_b_id": match.get("team_b_id"),
+        "winner_id": _confirmed_winner(match),
+        "fixture_type": match.get("fixture_type", "official"),
+        "can_invalidate": bool(_confirmed_winner(match)),
+    }
+
+
+def _match_result_fields(record: dict[str, Any] | None, winner_id: str | None) -> dict[str, Any]:
+    status = (record or {}).get("result_status") or ("confirmed" if winner_id else "pending")
+    return {
+        "confirmed_winner_id": winner_id,
+        "confirmed_score": (record or {}).get("confirmed_score") if status == "confirmed" else None,
+        "result_status": status,
+        "result_source": (record or {}).get("result_source") if status == "confirmed" else None,
+        "result_version": int((record or {}).get("result_version") or 0),
+        "result_created_at": (record or {}).get("result_created_at"),
+        "result_updated_at": (record or {}).get("result_updated_at"),
+        "original_prediction": _original_prediction(record),
+        "original_prediction_at": (record or {}).get("original_prediction_at"),
+        "prediction_version": (record or {}).get("prediction_version"),
+    }
 
 
 def map_win_probability(rating_a: float, rating_b: float) -> float:
@@ -186,8 +262,6 @@ def _round_pairs(
             raise ValueError(f"Confirmed fixture in round {round_no} contains a team that is not active.")
         if a in used or b in used:
             raise ValueError(f"A team appears in more than one confirmed fixture in round {round_no}.")
-        if (states[a]["wins"], states[a]["losses"]) != (states[b]["wins"], states[b]["losses"]):
-            raise ValueError(f"Confirmed fixture {a} vs {b} conflicts with current Swiss records.")
         used.update((a, b))
         normalized_fixed.append(fixture)
 
@@ -247,9 +321,14 @@ def simulate_swiss(
     actual_matches = actual_matches or []
     scenario_overrides = scenario_overrides or {}
     fixtures_by_round: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    generated_results_by_round: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for match in actual_matches:
         if match.get("stage_slug") == stage_slug and match.get("round_no"):
-            fixtures_by_round[int(match["round_no"])].append(match)
+            round_no_for_match = int(match["round_no"])
+            if match.get("fixture_type") == "generated":
+                generated_results_by_round[round_no_for_match].append(match)
+            else:
+                fixtures_by_round[round_no_for_match].append(match)
     played: set[frozenset[str]] = set()
     rounds: list[dict[str, Any]] = []
     max_rounds = int(rules.get("max_rounds", len(teams_list)))
@@ -258,6 +337,13 @@ def simulate_swiss(
         if round_no > max_rounds:
             raise ValueError(f"{stage_slug} exceeded {max_rounds} rounds before all teams advanced or were eliminated.")
         active = [team_id for team_id, state in states.items() if state["status"] == "active"]
+        inactive_confirmed_fixtures = [
+            fixture for fixture in fixtures_by_round.get(round_no, [])
+            if _confirmed_winner(fixture)
+            and (fixture["team_a_id"] not in active or fixture["team_b_id"] not in active)
+        ]
+        if inactive_confirmed_fixtures:
+            raise MatchDependencyConflict([_dependency_conflict(match) for match in inactive_confirmed_fixtures])
         pairings = _round_pairs(active, states, by_id, played, round_no, fixtures_by_round.get(round_no, []))
         round_matches: list[dict[str, Any]] = []
         for team_a_id, team_b_id, forced_rematch, fixture in pairings:
@@ -276,7 +362,14 @@ def simulate_swiss(
                 best_of = int(fixture["best_of"])
             prediction = predictor(a, b, best_of)
             key = match_key(stage_slug, round_no, team_a_id, team_b_id)
-            actual_winner = fixture.get("winner_id") if fixture else None
+            generated_result = next((
+                item for item in generated_results_by_round.get(round_no, [])
+                if frozenset((item["team_a_id"], item["team_b_id"])) == frozenset((team_a_id, team_b_id))
+            ), None)
+            result_record = fixture or generated_result
+            actual_winner = _confirmed_winner(result_record)
+            if actual_winner and actual_winner not in (team_a_id, team_b_id):
+                raise ValueError(f"Confirmed winner for match {result_record.get('id')} is not one of its participants.")
             override_winner = scenario_overrides.get(key)
             if actual_winner:
                 winner_id = actual_winner
@@ -304,6 +397,7 @@ def simulate_swiss(
                 "id": key,
                 "stage_slug": stage_slug,
                 "round_no": round_no,
+                "fixture_id": result_record.get("id") if result_record else None,
                 "team_a_id": team_a_id,
                 "team_b_id": team_b_id,
                 "best_of": best_of,
@@ -311,10 +405,13 @@ def simulate_swiss(
                 "loser_id": loser_id,
                 "status": "completed_result" if actual_winner else "predicted",
                 "fixture_confirmed": bool(fixture),
+                "fixture_type": "official" if fixture else "generated",
+                "pairing_status": "official_fixture" if fixture else "provisional_pairing",
                 "outcome_source": outcome_source,
                 "forced_rematch": forced_rematch,
                 "prediction": prediction,
-                "score": fixture.get("score") if fixture else None,
+                "score": _actual_score(result_record),
+                **_match_result_fields(result_record, actual_winner),
             })
         standings = sorted(
             [
@@ -364,9 +461,14 @@ def simulate_playoffs(
     scenario_overrides = scenario_overrides or {}
     actual_matches = actual_matches or []
     actual_by_round: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    generated_results_by_round: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for match in actual_matches:
         if match.get("stage_slug") == "playoffs" and match.get("round_no"):
-            actual_by_round[int(match["round_no"])].append(match)
+            round_no_for_match = int(match["round_no"])
+            if match.get("fixture_type") == "generated":
+                generated_results_by_round[round_no_for_match].append(match)
+            else:
+                actual_by_round[round_no_for_match].append(match)
     rounds: list[dict[str, Any]] = []
     previous_winners: list[str] = []
     champion: str | None = None
@@ -383,6 +485,9 @@ def simulate_playoffs(
             expected = {frozenset((a["id"], b["id"])) for a, b in pairs}
             supplied = {frozenset((m["team_a_id"], m["team_b_id"])) for m in fixtures}
             if not supplied.issubset(expected):
+                invalidated_results = [match for match in fixtures if frozenset((match["team_a_id"], match["team_b_id"])) not in expected and _confirmed_winner(match)]
+                if invalidated_results:
+                    raise MatchDependencyConflict([_dependency_conflict(match) for match in invalidated_results])
                 raise ValueError(f"Confirmed playoff fixture in round {round_no} conflicts with the configured bracket.")
             fixture_lookup = {frozenset((m["team_a_id"], m["team_b_id"])): m for m in fixtures}
         else:
@@ -390,14 +495,22 @@ def simulate_playoffs(
         matches: list[dict[str, Any]] = []
         winners: list[str] = []
         for a, b in pairs:
-            fixture = fixture_lookup.get(frozenset((a["id"], b["id"])))
+            pair = frozenset((a["id"], b["id"]))
+            fixture = fixture_lookup.get(pair)
+            generated_result = next((
+                item for item in generated_results_by_round.get(round_no, [])
+                if frozenset((item["team_a_id"], item["team_b_id"])) == pair
+            ), None)
+            result_record = fixture or generated_result
             if fixture and fixture.get("best_of"):
                 match_best_of = int(fixture["best_of"])
             else:
                 match_best_of = best_of
             prediction = predictor(a, b, match_best_of)
             key = match_key("playoffs", round_no, a["id"], b["id"])
-            actual_winner = fixture.get("winner_id") if fixture else None
+            actual_winner = _confirmed_winner(result_record)
+            if actual_winner and actual_winner not in (a["id"], b["id"]):
+                raise ValueError(f"Confirmed winner for match {result_record.get('id')} is not one of its participants.")
             override = scenario_overrides.get(key)
             if actual_winner:
                 winner_id, outcome_source = actual_winner, "completed_result"
@@ -416,6 +529,7 @@ def simulate_playoffs(
                 "stage_slug": "playoffs",
                 "round_no": round_no,
                 "round_name": ("Quarterfinals", "Semifinals", "Grand Final")[round_no - 1],
+                "fixture_id": result_record.get("id") if result_record else None,
                 "team_a_id": a["id"],
                 "team_b_id": b["id"],
                 "best_of": match_best_of,
@@ -423,9 +537,12 @@ def simulate_playoffs(
                 "loser_id": loser_id,
                 "status": "completed_result" if actual_winner else "predicted",
                 "fixture_confirmed": bool(fixture),
+                "fixture_type": "official" if fixture else "generated",
+                "pairing_status": "official_fixture" if fixture else "provisional_pairing",
                 "outcome_source": outcome_source,
                 "prediction": prediction,
-                "score": fixture.get("score") if fixture else None,
+                "score": _actual_score(result_record),
+                **_match_result_fields(result_record, actual_winner),
             })
             winners.append(winner_id)
         rounds.append({"round_no": round_no, "name": ("Quarterfinals", "Semifinals", "Grand Final")[round_no - 1], "matches": matches})
@@ -475,6 +592,48 @@ def simulate_tournament(
     path["stages"]["stage3"] = s3
     playoff_path = simulate_playoffs(s3["advanced"], predictor, path_rng, True, scenario_overrides, actual_matches)
     path["playoffs"] = playoff_path
+
+    projected_ids = {
+        match["id"]
+        for stage in path["stages"].values()
+        for round_data in stage["rounds"]
+        for match in round_data["matches"]
+    }
+    projected_ids.update(
+        match["id"]
+        for round_data in path["playoffs"]["rounds"]
+        for match in round_data["matches"]
+    )
+    projected_fixture_ids = {
+        match["fixture_id"]
+        for stage in path["stages"].values()
+        for round_data in stage["rounds"]
+        for match in round_data["matches"]
+        if match.get("fixture_id")
+    }
+    projected_fixture_ids.update(
+        match["fixture_id"]
+        for round_data in path["playoffs"]["rounds"]
+        for match in round_data["matches"]
+        if match.get("fixture_id")
+    )
+    stale_generated_results = [
+        _dependency_conflict(match)
+        for match in actual_matches
+        if match.get("fixture_type") == "generated"
+        and _confirmed_winner(match)
+        and match.get("id") not in projected_ids
+    ]
+    stale_official_results = [
+        _dependency_conflict(match)
+        for match in actual_matches
+        if match.get("fixture_type") != "generated"
+        and _confirmed_winner(match)
+        and match.get("stage_slug") in ("stage1", "stage2", "stage3", "playoffs")
+        and match.get("id") not in projected_fixture_ids
+    ]
+    if stale_generated_results or stale_official_results:
+        raise MatchDependencyConflict([*stale_generated_results, *stale_official_results])
 
     # Count how often each team reaches each point in the actual tournament path.
     all_team_ids = sorted({team["id"] for stage in entrants_by_stage.values() for team in stage})

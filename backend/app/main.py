@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import uuid
 from contextlib import asynccontextmanager
@@ -11,8 +12,8 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from .database import connect, get_metadata, initialize_database, seed_demo, utc_now
-from .engine import predict_match, simulate_tournament
+from .database import bump_state_version, connect, get_metadata, initialize_database, seed_demo, state_version, utc_now
+from .engine import MatchDependencyConflict, predict_match, simulate_tournament
 from .feature_engineering import enrich_teams_with_context
 from .importers import csv_payload, import_records, record_import_error
 from .model import available_matches, build_model_snapshot
@@ -38,7 +39,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["Content-Type"],
 )
 
@@ -55,6 +56,13 @@ class MatchPredictionRequest(BaseModel):
     team_b_id: str
     best_of: int = Field(default=3, description="1, 3, or 5")
     cutoff: str | None = None
+
+
+class MatchResultRequest(BaseModel):
+    winner_id: str | None = None
+    score: str | None = None
+    expected_result_version: int = Field(default=0, ge=0)
+    invalidate_conflict_ids: list[str] = Field(default_factory=list)
 
 
 def _team_rows(connection: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -74,6 +82,149 @@ def _stage_rows(connection: sqlite3.Connection) -> list[dict[str, Any]]:
 
 def _all_match_rows(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     return [dict(row) for row in connection.execute("SELECT * FROM matches ORDER BY played_at,id").fetchall()]
+
+
+def _projected_matches(result: dict[str, Any]) -> list[dict[str, Any]]:
+    path = result.get("projected_path", {})
+    matches: list[dict[str, Any]] = []
+    for stage in path.get("stages", {}).values():
+        for round_data in stage.get("rounds", []):
+            matches.extend(round_data.get("matches", []))
+    for round_data in path.get("playoffs", {}).get("rounds", []):
+        matches.extend(round_data.get("matches", []))
+    return matches
+
+
+def _find_projected_match(result: dict[str, Any], match_id: str) -> dict[str, Any] | None:
+    return next((
+        match for match in _projected_matches(result)
+        if match.get("id") == match_id or match.get("fixture_id") == match_id
+    ), None)
+
+
+def _build_tournament_result(
+    connection: sqlite3.Connection,
+    simulations: int,
+    seed: int,
+    cutoff: str,
+    scenario_overrides: dict[str, str],
+    model_state: dict[str, Any] | None = None,
+    allow_training: bool = True,
+) -> dict[str, Any]:
+    teams = _team_rows(connection)
+    if len(teams) < 32:
+        raise ValueError("Import 32 stage entrant team records before simulating the full tournament.")
+    stages = _stage_rows(connection)
+    stage_rules = {stage["slug"]: stage["rules"] for stage in stages if stage["slug"] in ("stage1", "stage2", "stage3")}
+    entrants_by_stage = {slug: _direct_entrants(connection, slug) for slug in ("stage1", "stage2", "stage3")}
+    matches = _all_match_rows(connection)
+    training_matches = []
+    for match in matches:
+        training_match = dict(match)
+        if match.get("result_status") == "confirmed" and match.get("confirmed_winner_id"):
+            training_match["winner_id"] = match["confirmed_winner_id"]
+            if match.get("confirmed_score") is not None:
+                training_match["score"] = match["confirmed_score"]
+        training_matches.append(training_match)
+    prediction_teams = _prediction_team_rows(connection, teams, training_matches, cutoff)
+    model = build_model_snapshot(prediction_teams, training_matches, cutoff, model_state, allow_training)
+    tournament_matches = [
+        match for match in matches
+        if match.get("event_id") == EVENT_ID
+        and match.get("stage_slug") in ("stage1", "stage2", "stage3", "playoffs")
+    ]
+    result = simulate_tournament(
+        entrants_by_stage,
+        stage_rules,
+        model["predictor"],
+        simulations,
+        seed,
+        scenario_overrides,
+        tournament_matches,
+    )
+    result.update({
+        "cutoff": cutoff,
+        "model": {
+            "name": model["name"],
+            "status": model["status"],
+            "status_message": model["status_message"],
+            "eligible_matches": model["eligible_matches"],
+            "metrics": model["metrics"],
+            "metrics_scope": model["metrics_scope"],
+            "trained_cutoff": model["trained_cutoff"],
+        },
+        "model_state": model["state"],
+        "data_source": get_metadata(connection).get("active_data_source", "unknown"),
+        "scenario": {"active": bool(scenario_overrides), "overrides": scenario_overrides},
+        "sampling_uncertainty": "Approximate 95% interval = estimate ± 1.96 × standard error; estimates are Monte Carlo samples.",
+        "assumptions": [
+            "Each 16-team Swiss stage uses three wins to advance and three losses to be eliminated; this is provisional until organizer rules confirm it.",
+            "Pairings group teams by record, order by configured seed, and avoid rematches when a complete no-rematch pairing exists.",
+            "Stage 1 and Stage 2 opening matches are best-of-one; advancement/elimination matches are best-of-three. Stage 3 matches are best-of-three.",
+            "A series uses one adjusted map probability for each map and assumes identical, independent map outcomes. Historical map vetoes only reweight the map pool; the current match veto is unknown unless represented by imported completed history.",
+            "Map pool, player ratings, roster continuity, and head-to-head use fixed bounded heuristic priors, not learned coefficients. The UI exposes which signals were available and their sample sizes.",
+            "Eight direct Stage 2 and eight direct Stage 3 entrants are populated from configured slots; exact seeds and playoff bracket order remain provisional.",
+        ],
+    })
+    return result
+
+
+def _save_prediction_run(
+    connection: sqlite3.Connection,
+    result: dict[str, Any],
+    cutoff: str,
+    simulations: int,
+    seed: int,
+    scenario_overrides: dict[str, str],
+    tournament_state_version: int,
+) -> dict[str, Any]:
+    run_id = str(uuid.uuid4())
+    created_at = utc_now()
+    result.update({"run_id": run_id, "state_version": tournament_state_version})
+    connection.execute(
+        """INSERT INTO prediction_runs(id,data_cutoff,random_seed,simulations,model_name,created_at,
+           scenario_json,state_version,result_json) VALUES(?,?,?,?,?,?,?,?,?)""",
+        (run_id, cutoff, seed, simulations, result["model"]["name"], created_at,
+         json.dumps(scenario_overrides), tournament_state_version, json.dumps(result)),
+    )
+    return result
+
+
+def _validate_result_score(score: str | None, winner_id: str, match: dict[str, Any]) -> str | None:
+    if score is None or not score.strip():
+        return None
+    best_of = int(match.get("best_of") or 0)
+    if best_of not in (1, 3, 5):
+        raise HTTPException(422, "This match has no supported series format for score validation.")
+    normalized = score.strip().replace("-", ":")
+    found = re.fullmatch(r"(\d+)\s*:\s*(\d+)", normalized)
+    if not found:
+        raise HTTPException(422, "Enter a series score as Team A maps:Team B maps, such as 2:1.")
+    score_a, score_b = (int(value) for value in found.groups())
+    needed = best_of // 2 + 1
+    if max(score_a, score_b) != needed or min(score_a, score_b) >= needed or score_a == score_b:
+        raise HTTPException(422, f"A BO{best_of} series score must end when one team reaches {needed} map wins.")
+    score_winner = match["team_a_id"] if score_a > score_b else match["team_b_id"]
+    if score_winner != winner_id:
+        raise HTTPException(422, "The series score winner must match the selected actual winner.")
+    return f"{score_a}:{score_b}"
+
+
+def _dependency_conflict_detail(
+    connection: sqlite3.Connection,
+    conflicts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    teams = {team["id"]: team["name"] for team in _team_rows(connection)}
+    detailed = [{
+        **item,
+        "team_a_name": teams.get(item.get("team_a_id"), item.get("team_a_id")),
+        "team_b_name": teams.get(item.get("team_b_id"), item.get("team_b_id")),
+        "winner_name": teams.get(item.get("winner_id"), item.get("winner_id")),
+    } for item in conflicts]
+    return {
+        "message": "This change makes later confirmed match results inconsistent with the regenerated tournament path.",
+        "conflicts": detailed,
+    }
 
 
 def _direct_entrants(connection: sqlite3.Connection, stage_slug: str) -> list[dict[str, Any]]:
@@ -153,7 +304,8 @@ def overview() -> dict[str, Any]:
         model_snapshot = build_model_snapshot(teams, matches, utc_now())
         total_matches = connection.execute("SELECT COUNT(*) AS n FROM matches").fetchone()["n"]
         event_results = connection.execute(
-            "SELECT COUNT(*) AS n FROM matches WHERE event_id=? AND status='completed' AND winner_id IS NOT NULL",
+            """SELECT COUNT(*) AS n FROM matches WHERE event_id=? AND result_status='confirmed'
+               AND (confirmed_winner_id IS NOT NULL OR winner_id IS NOT NULL)""",
             (EVENT_ID,),
         ).fetchone()["n"]
         direct_count = connection.execute(
@@ -220,6 +372,7 @@ def load_demo_dataset() -> dict[str, Any]:
         if any(existing.values()):
             raise HTTPException(409, "The demo can only be loaded into an empty dataset. Export your data before replacing it.")
         seed_demo(connection)
+        bump_state_version(connection)
         return {
             "ok": True,
             "data_source": get_metadata(connection).get("active_data_source"),
@@ -389,59 +542,167 @@ def predict(request: MatchPredictionRequest) -> dict[str, Any]:
 def simulate(request: SimulationRequest) -> dict[str, Any]:
     cutoff = _cutoff(request.cutoff)
     with connect() as connection:
-        teams = _team_rows(connection)
-        if len(teams) < 32:
-            raise HTTPException(422, "Import 32 stage entrant team records before simulating the full tournament.")
-        stages = _stage_rows(connection)
-        stage_rules = {stage["slug"]: stage["rules"] for stage in stages if stage["slug"] in ("stage1", "stage2", "stage3")}
-        entrants_by_stage = {
-            slug: _direct_entrants(connection, slug) for slug in ("stage1", "stage2", "stage3")
-        }
-        matches = _all_match_rows(connection)
-        prediction_teams = _prediction_team_rows(connection, teams, matches, cutoff)
-        model = build_model_snapshot(prediction_teams, matches, cutoff)
+        snapshot_version = state_version(connection)
         try:
-            result = simulate_tournament(
-                entrants_by_stage,
-                stage_rules,
-                model["predictor"],
-                request.simulations,
-                request.seed,
-                request.scenario_overrides,
-                matches,
+            result = _build_tournament_result(
+                connection, request.simulations, request.seed, cutoff, request.scenario_overrides
             )
+        except MatchDependencyConflict as exc:
+            raise HTTPException(409, _dependency_conflict_detail(connection, exc.conflicts)) from exc
         except (ValueError, KeyError) as exc:
             raise HTTPException(422, f"Tournament configuration error: {exc}") from exc
-        run_id = str(uuid.uuid4())
-        connection.execute(
-            """INSERT INTO prediction_runs(id,data_cutoff,random_seed,simulations,model_name,created_at,scenario_json)
-               VALUES(?,?,?,?,?,?,?)""",
-            (run_id, cutoff, request.seed, request.simulations, model["name"], utc_now(), json.dumps(request.scenario_overrides)),
+        connection.execute("BEGIN IMMEDIATE")
+        if state_version(connection) != snapshot_version:
+            raise HTTPException(409, "Tournament data changed while this prediction was running. Run it again to get a current result.")
+        return _save_prediction_run(
+            connection, result, cutoff, request.simulations, request.seed,
+            request.scenario_overrides, snapshot_version,
         )
-        result.update({
-            "run_id": run_id,
-            "cutoff": cutoff,
-            "model": {
-                "name": model["name"],
-                "status": model["status"],
-                "status_message": model["status_message"],
-                "eligible_matches": model["eligible_matches"],
-                "metrics": model["metrics"],
-                "metrics_scope": model["metrics_scope"],
-            },
-            "data_source": get_metadata(connection).get("active_data_source", "unknown"),
-            "scenario": {"active": bool(request.scenario_overrides), "overrides": request.scenario_overrides},
-            "sampling_uncertainty": "Approximate 95% interval = estimate ± 1.96 × standard error; estimates are Monte Carlo samples.",
-            "assumptions": [
-                "Each 16-team Swiss stage uses three wins to advance and three losses to be eliminated; this is provisional until organizer rules confirm it.",
-                "Pairings group teams by record, order by configured seed, and avoid rematches when a complete no-rematch pairing exists.",
-                "Stage 1 and Stage 2 opening matches are best-of-one; advancement/elimination matches are best-of-three. Stage 3 matches are best-of-three.",
-                "A series uses one adjusted map probability for each map and assumes identical, independent map outcomes. Historical map vetoes only reweight the map pool; the current match veto is unknown unless represented by imported completed history.",
-                "Map pool, player ratings, roster continuity, and head-to-head use fixed bounded heuristic priors, not learned coefficients. The UI exposes which signals were available and their sample sizes.",
-                "Eight direct Stage 2 and eight direct Stage 3 entrants are populated from configured slots; exact seeds and playoff bracket order remain provisional.",
-            ],
-        })
-        return result
+
+
+def _mutate_match_result(match_id: str, request: MatchResultRequest, clear: bool) -> dict[str, Any]:
+    with connect() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        latest_run = connection.execute(
+            "SELECT * FROM prediction_runs ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+        if not latest_run or not latest_run["result_json"]:
+            raise HTTPException(409, "Run a tournament prediction before setting a match result.")
+        current_version = state_version(connection)
+        if int(latest_run["state_version"] or 0) != current_version:
+            raise HTTPException(409, "The current prediction is out of date. Recompute the tournament, then try again.")
+        try:
+            stored_result = json.loads(latest_run["result_json"])
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise HTTPException(500, "The latest prediction snapshot could not be read.") from exc
+        projected_match = _find_projected_match(stored_result, match_id)
+        if not projected_match:
+            raise HTTPException(409, "This match is no longer part of the current projected tournament path. Refresh the page and select the current matchup.")
+
+        record_id = projected_match.get("fixture_id") or projected_match["id"]
+        existing_row = connection.execute("SELECT * FROM matches WHERE id=?", (record_id,)).fetchone()
+        if existing_row:
+            row = dict(existing_row)
+            if (row["team_a_id"], row["team_b_id"]) not in (
+                (projected_match["team_a_id"], projected_match["team_b_id"]),
+                (projected_match["team_b_id"], projected_match["team_a_id"]),
+            ):
+                raise HTTPException(409, "This match identifier now refers to different participants. Refresh and select the current matchup.")
+        else:
+            if projected_match.get("fixture_type") == "official":
+                raise HTTPException(409, "The official fixture record is missing from storage. Re-import the current fixtures before setting its result.")
+            now = utc_now()
+            connection.execute(
+                """INSERT INTO matches(id,event_id,stage_slug,round_no,team_a_id,team_b_id,best_of,status,
+                   source,available_at,retrieved_at,fixture_type,result_status)
+                   VALUES(?,?,?,?,?,?,?,'scheduled','manual result entry',?,?,?,'pending')""",
+                (record_id, EVENT_ID, projected_match["stage_slug"], projected_match["round_no"],
+                 projected_match["team_a_id"], projected_match["team_b_id"], projected_match["best_of"], now, now, "generated"),
+            )
+            row = dict(connection.execute("SELECT * FROM matches WHERE id=?", (record_id,)).fetchone())
+
+        if int(row.get("result_version") or 0) != request.expected_result_version:
+            raise HTTPException(409, "This result changed in another update. Refresh the tournament and try again.")
+        if clear:
+            if projected_match.get("result_status") != "confirmed" and not projected_match.get("confirmed_winner_id"):
+                raise HTTPException(409, "This match does not have a confirmed result to clear.")
+            connection.execute(
+                """UPDATE matches SET result_status='cleared',confirmed_winner_id=NULL,confirmed_score=NULL,
+                   result_source='manual',result_updated_at=?,result_version=result_version+1,status='scheduled'
+                   WHERE id=?""",
+                (utc_now(), record_id),
+            )
+        else:
+            winner_id = request.winner_id
+            if not winner_id:
+                raise HTTPException(422, "Select one of the participating teams as the winner.")
+            if winner_id not in (projected_match["team_a_id"], projected_match["team_b_id"]):
+                raise HTTPException(422, "The selected winner must be one of this match's participants.")
+            score = _validate_result_score(request.score, winner_id, projected_match)
+            original_prediction_json = row.get("original_prediction_json")
+            original_prediction_at = row.get("original_prediction_at")
+            prediction_version = row.get("prediction_version")
+            if not original_prediction_json and row.get("result_status") != "confirmed" and row.get("status") != "completed":
+                original_prediction_json = json.dumps(projected_match["prediction"])
+                original_prediction_at = latest_run["created_at"]
+                prediction_version = latest_run["id"]
+            now = utc_now()
+            connection.execute(
+                """UPDATE matches SET status='completed',confirmed_winner_id=?,confirmed_score=?,result_status='confirmed',
+                   result_source='manual',result_created_at=COALESCE(result_created_at,?),result_updated_at=?,
+                   result_version=result_version+1,original_prediction_json=?,original_prediction_at=?,prediction_version=?,
+                   available_at=?,retrieved_at=?
+                   WHERE id=?""",
+                (winner_id, score, now, now, original_prediction_json, original_prediction_at, prediction_version,
+                 now, now, record_id),
+            )
+
+        simulations = int(latest_run["simulations"])
+        seed = int(latest_run["random_seed"])
+        cutoff = latest_run["data_cutoff"]
+        scenario_overrides = json.loads(latest_run["scenario_json"] or "{}")
+        model_state = stored_result.get("model_state")
+        invalidated_ids: list[str] = []
+        try:
+            result = _build_tournament_result(
+                connection, simulations, seed, cutoff, scenario_overrides,
+                model_state=model_state, allow_training=False,
+            )
+            if request.invalidate_conflict_ids:
+                raise HTTPException(409, "The downstream conflicts changed. Reopen the result and review the current conflict list.")
+        except MatchDependencyConflict as exc:
+            conflicts = exc.conflicts
+            conflict_ids = {str(item["id"]) for item in conflicts}
+            supplied_ids = set(request.invalidate_conflict_ids)
+            if supplied_ids != conflict_ids:
+                raise HTTPException(409, _dependency_conflict_detail(connection, conflicts)) from exc
+            if any(not item.get("can_invalidate") for item in conflicts):
+                raise HTTPException(409, {
+                    "message": "At least one conflicting result belongs to an official fixture and cannot be invalidated as a generated prediction.",
+                    "conflicts": conflicts,
+                }) from exc
+            for conflict in conflicts:
+                current = connection.execute(
+                    "SELECT fixture_type,result_status FROM matches WHERE id=?", (conflict["id"],)
+                ).fetchone()
+                if not current or current["result_status"] != "confirmed":
+                    raise HTTPException(409, "A downstream result changed while conflicts were being reviewed. Refresh and try again.") from exc
+                connection.execute(
+                    """UPDATE matches SET result_status='cleared',confirmed_winner_id=NULL,confirmed_score=NULL,
+                       result_source='manual',result_updated_at=?,result_version=result_version+1,status='scheduled'
+                       WHERE id=?""",
+                    (utc_now(), conflict["id"]),
+                )
+                invalidated_ids.append(str(conflict["id"]))
+            try:
+                result = _build_tournament_result(
+                    connection, simulations, seed, cutoff, scenario_overrides,
+                    model_state=model_state, allow_training=False,
+                )
+            except (MatchDependencyConflict, ValueError, KeyError) as second_exc:
+                raise HTTPException(422, f"The tournament could not be recalculated after the confirmed conflicts were cleared: {second_exc}") from second_exc
+        except (ValueError, KeyError) as exc:
+            raise HTTPException(422, f"Tournament recalculation failed: {exc}") from exc
+
+        new_version = bump_state_version(connection)
+        result = _save_prediction_run(
+            connection, result, cutoff, simulations, seed, scenario_overrides, new_version,
+        )
+        return {
+            "message": "Result cleared. Predictions updated." if clear else "Result confirmed. Predictions updated.",
+            "result": result,
+            "invalidated_result_ids": invalidated_ids,
+        }
+
+
+@app.put("/api/matches/{match_id}/result")
+def set_match_result(match_id: str, request: MatchResultRequest) -> dict[str, Any]:
+    return _mutate_match_result(match_id, request, clear=False)
+
+
+@app.delete("/api/matches/{match_id}/result")
+def clear_match_result(match_id: str, request: MatchResultRequest) -> dict[str, Any]:
+    return _mutate_match_result(match_id, request, clear=True)
 
 
 @app.post("/api/import/json")
@@ -470,7 +731,7 @@ async def import_csv(request: Request, kind: str = Query(..., pattern="^(teams|m
 @app.get("/api/exports/predictions")
 def latest_prediction() -> dict[str, Any]:
     with connect() as connection:
-        row = connection.execute("SELECT * FROM prediction_runs ORDER BY created_at DESC LIMIT 1").fetchone()
+        row = connection.execute("SELECT * FROM prediction_runs ORDER BY rowid DESC LIMIT 1").fetchone()
         if not row:
             raise HTTPException(404, "No prediction run is stored yet")
         return dict(row)

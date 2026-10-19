@@ -10,7 +10,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from .database import connect, get_metadata, utc_now
+from .database import bump_state_version, connect, get_metadata, utc_now
 
 
 ALLOWED_RECORDS = ("teams", "matches", "players", "roster_memberships", "map_results", "map_vetoes", "player_stats")
@@ -128,19 +128,29 @@ def import_records(
                 stage_slug = item.get("stage_slug")
                 if stage_slug and stage_slug not in valid_stage_slugs and stage_slug != "playoffs":
                     raise ValueError(f"Unknown tournament stage {stage_slug!r} in match {item['id']}.")
+                source = item.get("source", "user-supplied import")
+                result_status = "confirmed" if status == "completed" and item.get("winner_id") else "pending"
                 connection.execute(
                     """INSERT INTO matches(id,event_id,stage_slug,round_no,team_a_id,team_b_id,best_of,status,
-                       winner_id,score,played_at,available_at,source,source_url,retrieved_at,parsing_error)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL) ON CONFLICT(id) DO UPDATE SET
+                       winner_id,score,played_at,available_at,source,source_url,retrieved_at,parsing_error,
+                       fixture_type,result_status,result_source,result_created_at,result_updated_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,'official',?,?,?,?) ON CONFLICT(id) DO UPDATE SET
                        event_id=excluded.event_id,stage_slug=excluded.stage_slug,round_no=excluded.round_no,
                        team_a_id=excluded.team_a_id,team_b_id=excluded.team_b_id,best_of=excluded.best_of,
                        status=excluded.status,winner_id=excluded.winner_id,score=excluded.score,played_at=excluded.played_at,
                        available_at=excluded.available_at,source=excluded.source,source_url=excluded.source_url,
-                       retrieved_at=excluded.retrieved_at,parsing_error=NULL""",
+                       retrieved_at=excluded.retrieved_at,parsing_error=NULL,fixture_type='official',
+                       result_status=CASE WHEN matches.result_source='manual' THEN matches.result_status ELSE excluded.result_status END,
+                       result_source=CASE WHEN matches.result_source='manual' THEN matches.result_source ELSE excluded.result_source END,
+                       result_created_at=CASE WHEN matches.result_source='manual' THEN matches.result_created_at ELSE excluded.result_created_at END,
+                       result_updated_at=CASE WHEN matches.result_source='manual' THEN matches.result_updated_at ELSE excluded.result_updated_at END""",
                     (str(item["id"]), event_id if stage_slug else None, stage_slug, item.get("round_no"),
                      item["team_a_id"], item["team_b_id"], item.get("best_of"), status, item.get("winner_id"),
                      item.get("score"), item.get("played_at"), item.get("available_at") or now,
-                     item.get("source", "user-supplied import"), item.get("source_url") or source_url, now),
+                     source, item.get("source_url") or source_url, now, result_status,
+                     item.get("result_source", source) if result_status == "confirmed" else None,
+                     item.get("result_created_at", now) if result_status == "confirmed" else None,
+                     item.get("result_updated_at", now) if result_status == "confirmed" else None),
                 )
                 inserted["matches"] += 1
             for item in payload.get("roster_memberships", []):
@@ -199,6 +209,8 @@ def import_records(
                 "INSERT INTO source_log(provider,source_url,retrieved_at,status,records_read,error) VALUES(?,?,?,?,?,NULL)",
                 ("user-supplied import", source_url, now, "loaded", sum(inserted.values())),
             )
+            if any(inserted.values()):
+                bump_state_version(connection)
     except HTTPException:
         raise
     except (sqlite3.Error, KeyError, TypeError, ValueError) as exc:
