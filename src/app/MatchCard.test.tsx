@@ -44,4 +44,38 @@ describe("MatchCard scenario control", () => {
     expect(screen.getByText("64%")).toBeTruthy();
     expect(screen.getByText("36%")).toBeTruthy();
   });
+
+  it("keeps the model pick separate from the confirmed winner and exposes edit and clear actions", () => {
+    const onManageResult = vi.fn();
+    const actual: PredictedMatch = {
+      ...match,
+      winner_id: "b",
+      loser_id: "a",
+      status: "completed_result",
+      outcome_source: "completed_result",
+      result_status: "confirmed",
+      confirmed_winner_id: "b",
+      confirmed_score: "0:1",
+      original_prediction: match.prediction,
+    };
+    render(<MatchCard match={actual} teamMap={new Map([[first.id, first], [second.id, second]])} draftOverrides={{}} onScenarioChange={vi.fn()} onOpen={vi.fn()} onManageResult={onManageResult} />);
+    expect(screen.getByText(/MODEL PICK/).textContent).toContain("Alpha");
+    expect(screen.getByText(/ACTUAL WINNER/).textContent).toContain("Bravo");
+    expect(screen.getByText("PREDICTION MISSED")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Edit Result" }));
+    fireEvent.click(screen.getByRole("button", { name: "Clear Result" }));
+    expect(onManageResult.mock.calls.map((call) => call[0])).toEqual([actual, actual]);
+    expect(onManageResult.mock.calls.map((call) => call[1])).toEqual(["edit", "clear"]);
+  });
+
+  it("does not claim a prediction was correct when an imported result has no saved forecast", () => {
+    const imported: PredictedMatch = {
+      ...match,
+      winner_id: "b", loser_id: "a", status: "completed_result",
+      outcome_source: "completed_result", result_status: "confirmed", confirmed_winner_id: "b",
+    };
+    render(<MatchCard match={imported} teamMap={new Map([[first.id, first], [second.id, second]])} draftOverrides={{}} onScenarioChange={vi.fn()} onOpen={vi.fn()} />);
+    expect(screen.getByText(/NO SAVED PRE-MATCH PICK/).textContent).toContain("Unavailable");
+    expect(screen.queryByText(/PREDICTION (CORRECT|MISSED)/)).toBeNull();
+  });
 });

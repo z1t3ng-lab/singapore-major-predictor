@@ -2,6 +2,7 @@
 
 import React, { FormEvent, useEffect, useMemo, useState } from "react";
 import { MatchCard } from "@/components/MatchCard";
+import { ResultDialog, type ResultAction } from "@/components/ResultDialog";
 import { getMatchDetail, getOverview, getTeams, importFile, loadDemoDataset, runSimulation } from "@/lib/api";
 import { exportRows, percentage, rowsToCsv, scenarioChanged, setScenarioWinner } from "@/lib/helpers";
 import type { Overview, PredictedMatch, Team, TournamentResult } from "@/lib/types";
@@ -47,6 +48,13 @@ function downloadFile(name: string, contents: string, type: string) {
   URL.revokeObjectURL(link.href);
 }
 
+function projectedMatchesFor(result: TournamentResult) {
+  return [
+    ...Object.values(result.projected_path.stages).flatMap((stage) => stage.rounds.flatMap((round) => round.matches)),
+    ...result.projected_path.playoffs.rounds.flatMap((round) => round.matches),
+  ];
+}
+
 export default function Home() {
   const [view, setView] = useState<ViewKey>("overview");
   const [overview, setOverview] = useState<Overview | null>(null);
@@ -69,6 +77,9 @@ export default function Home() {
   const [importError, setImportError] = useState("");
   const [demoLoading, setDemoLoading] = useState(false);
   const [demoError, setDemoError] = useState("");
+  const [resultEditor, setResultEditor] = useState<{ match: PredictedMatch; action: ResultAction } | null>(null);
+  const [resultSaving, setResultSaving] = useState(false);
+  const [resultNotice, setResultNotice] = useState("");
 
   const teamMap = useMemo(() => new Map(teams.map((team) => [team.id, team])), [teams]);
   const hasCompleteField = teams.length >= 32;
@@ -76,6 +87,11 @@ export default function Home() {
     ? Object.entries(result.probabilities).sort((a, b) => b[1].champion.probability - a[1].champion.probability)[0]
     : undefined;
   const changedScenario = scenarioChanged(draftOverrides, appliedOverrides);
+  const projectedMatches = result ? [
+    ...Object.values(result.projected_path.stages).flatMap((stage) => stage.rounds.flatMap((round) => round.matches)),
+    ...result.projected_path.playoffs.rounds.flatMap((round) => round.matches),
+  ] : [];
+  const confirmedResultCount = projectedMatches.filter((match) => match.result_status === "confirmed" || match.outcome_source === "completed_result").length;
 
   async function refreshBaseData() {
     const [overviewData, teamsData] = await Promise.all([getOverview(), getTeams()]);
@@ -166,6 +182,25 @@ export default function Home() {
 
   function changeScenario(match: PredictedMatch, winnerId: string) {
     setDraftOverrides((current) => setScenarioWinner(current, match.id, winnerId || null));
+  }
+
+  function manageMatchResult(match: PredictedMatch, action: ResultAction) {
+    setResultNotice("");
+    setResultEditor({ match, action });
+  }
+
+  function onMatchResultSaved(response: { message: string; result: TournamentResult; invalidated_result_ids: string[] }) {
+    setResult(response.result);
+    setAppliedOverrides(response.result.scenario.overrides);
+    setDraftOverrides(response.result.scenario.overrides);
+    const suffix = response.invalidated_result_ids.length
+      ? ` ${response.invalidated_result_ids.length} downstream result(s) were cleared after confirmation.`
+      : "";
+    setResultNotice(`${response.message}${suffix}`);
+    const updatedMatch = projectedMatchesFor(response.result).find((match) => match.id === resultEditor?.match.id);
+    if (updatedMatch && selectedMatch?.id === updatedMatch.id) void openMatch(updatedMatch);
+    setResultEditor(null);
+    void getOverview().then(setOverview).catch(() => undefined);
   }
 
   function applyScenario() {
@@ -321,10 +356,16 @@ export default function Home() {
             </select></label>
             <label><span>SEED</span><input aria-label="Random seed" type="number" min={0} value={randomSeed} onChange={(e) => setRandomSeed(Math.max(0, Number(e.target.value)))} /></label>
             <label className="cutoff-control"><span>DATA CUTOFF</span><input aria-label="Prediction cutoff" type="datetime-local" value={cutoff} onChange={(e) => setCutoff(e.target.value)} /></label>
-            <button className="run-button" onClick={() => void executeSimulation()} disabled={simulating || loading || !hasCompleteField} title={!hasCompleteField ? "Load 32 participant records before simulating" : undefined}>
+            <button className="run-button" onClick={() => void executeSimulation()} disabled={simulating || loading || resultSaving || !hasCompleteField} title={!hasCompleteField ? "Load 32 participant records before simulating" : undefined}>
               <span>{simulating ? "◌" : "▶"}</span>{simulating ? "SIMULATING" : hasCompleteField ? "SIMULATE TOURNAMENT" : "FIELD NOT READY"}
             </button>
           </section>
+
+          {result && <div className="result-summary" role="status">
+            <span className="result-summary-mark">✓</span>
+            <span><b>{confirmedResultCount} confirmed result{confirmedResultCount === 1 ? "" : "s"}</b><small>{Math.max(0, projectedMatches.length - confirmedResultCount)} remaining outcome{projectedMatches.length - confirmedResultCount === 1 ? " is" : "s are"} projected · confirmed winners are locked into recalculation</small></span>
+          </div>}
+          {resultNotice && <div className="success-banner" role="status">✓ {resultNotice}</div>}
 
           {changedScenario && <div className="scenario-banner">
             <div><b>UNAPPLIED SCENARIO</b><span>One or more unresolved match winners have been changed. Recompute the dependent pairings and probabilities.</span></div>
@@ -353,11 +394,11 @@ export default function Home() {
               />}
               {(view === "stage1" || view === "stage2" || view === "stage3") && result && <StageView
                 slug={view} overview={overview} stage={matchesForStage(view)} result={result} teamMap={teamMap}
-                draftOverrides={draftOverrides} onScenarioChange={changeScenario} onOpenMatch={openMatch}
+                draftOverrides={draftOverrides} onScenarioChange={changeScenario} onOpenMatch={openMatch} onManageResult={manageMatchResult}
               />}
               {view === "playoffs" && result && <PlayoffsView
                 result={result} teamMap={teamMap} draftOverrides={draftOverrides}
-                onScenarioChange={changeScenario} onOpenMatch={openMatch}
+                onScenarioChange={changeScenario} onOpenMatch={openMatch} onManageResult={manageMatchResult}
               />}
               {view === "teams" && hasCompleteField && result && <TeamsView teams={teams} result={result} />}
             </>
@@ -365,7 +406,12 @@ export default function Home() {
 
           {selectedMatch && <MatchDetailPanel
             match={selectedMatch} detail={matchDetail} loading={detailLoading} teamMap={teamMap}
-            probabilities={result?.probabilities} onClose={() => setSelectedMatch(null)}
+            probabilities={result?.probabilities} onClose={() => setSelectedMatch(null)} onManageResult={manageMatchResult}
+          />}
+
+          {resultEditor && <ResultDialog
+            match={resultEditor.match} teamMap={teamMap} action={resultEditor.action} onClose={() => !resultSaving && setResultEditor(null)}
+            onBusyChange={setResultSaving} onSaved={onMatchResultSaved}
           />}
 
           <footer className="page-footer">
@@ -444,6 +490,8 @@ function OverviewView(props: {
 }) {
   const { overview, teams, result, teamMap, champion, playoffChampionName, upcomingMatches } = props;
   const pathChampion = result?.projected_path.playoffs.champion_id;
+  const finalMatch = result?.projected_path.playoffs.rounds[2]?.matches[0];
+  const finalConfirmed = finalMatch?.result_status === "confirmed" || finalMatch?.outcome_source === "completed_result";
   const pathProbability = pathChampion ? result?.probabilities[pathChampion]?.champion.probability : 0;
   const leaderboard = Object.entries(result?.probabilities ?? {}).sort((a, b) => b[1].champion.probability - a[1].champion.probability).slice(0, 5);
   return (
@@ -451,7 +499,7 @@ function OverviewView(props: {
       <div className="overview-hero-grid">
         <section className="champion-card">
           <div className="champion-card-glow" />
-          <div className="champion-card-top"><span className="hero-kicker"><i /> PROJECTED CHAMPION</span><span className="hero-trophy">✦</span></div>
+          <div className="champion-card-top"><span className="hero-kicker"><i /> {finalConfirmed ? "ACTUAL CHAMPION" : "PROJECTED CHAMPION"}</span><span className="hero-trophy">✦</span></div>
           <div className="champion-team-row">
             <TeamMark name={playoffChampionName} />
             <div><strong>{playoffChampionName}</strong><span>{teamMap.get(pathChampion ?? "")?.region ?? "Projected from Stage 3"} <i>·</i> Seed #{teamMap.get(pathChampion ?? "")?.seed ?? "—"}</span></div>
@@ -557,8 +605,9 @@ function StageView(props: {
   draftOverrides: Record<string, string>;
   onScenarioChange: (match: PredictedMatch, winnerId: string) => void;
   onOpenMatch: (match: PredictedMatch) => void;
+  onManageResult: (match: PredictedMatch, action: ResultAction) => void;
 }) {
-  const { slug, overview, stage, result, teamMap, draftOverrides, onScenarioChange, onOpenMatch } = props;
+  const { slug, overview, stage, result, teamMap, draftOverrides, onScenarioChange, onOpenMatch, onManageResult } = props;
   const config = overview.stages.find((item) => item.slug === slug);
   if (!stage || !config) return <div className="empty-state">No projected data for this stage yet.</div>;
   const advancementField = slug === "stage1" ? "stage1_advance" : slug === "stage2" ? "stage2_advance" : "playoffs";
@@ -584,7 +633,7 @@ function StageView(props: {
         <div className="subsection-title"><div><span className="section-overline">PROJECTED MATCHES</span><h2>Round by round</h2></div><span className="soft-badge">{result.simulations.toLocaleString()} RUNS FOR ODDS</span></div>
         {stage.rounds.map((round) => <section className="round-section" key={round.round_no}>
           <div className="round-heading"><span className="round-chip">R{String(round.round_no).padStart(2, "0")}</span><div><b>Round {round.round_no}</b><small>{round.matches.length} pairings <i>·</i> seeded Swiss groupings</small></div><span className="round-line" /></div>
-          <div className="match-grid">{round.matches.map((match) => <MatchCard key={match.id} match={match} teamMap={teamMap} draftOverrides={draftOverrides} onScenarioChange={onScenarioChange} onOpen={() => onOpenMatch(match)} />)}</div>
+          <div className="match-grid">{round.matches.map((match) => <MatchCard key={match.id} match={match} teamMap={teamMap} draftOverrides={draftOverrides} onScenarioChange={onScenarioChange} onOpen={() => onOpenMatch(match)} onManageResult={onManageResult} />)}</div>
         </section>)}
         <div className="projection-end"><span>✓</span><div><b>{stage.advanced.length} teams projected to advance</b><span>Results flow into the next stage's direct-entry field.</span></div><div className="advance-avatars">{stage.advanced.slice(0, 5).map((team) => <TeamMark key={team.id} name={team.name} small />)}<i>+{Math.max(0, stage.advanced.length - 5)}</i></div></div>
       </div>
@@ -622,8 +671,9 @@ function PlayoffsView(props: {
   draftOverrides: Record<string, string>;
   onScenarioChange: (match: PredictedMatch, winnerId: string) => void;
   onOpenMatch: (match: PredictedMatch) => void;
+  onManageResult: (match: PredictedMatch, action: ResultAction) => void;
 }) {
-  const { result, teamMap, draftOverrides, onScenarioChange, onOpenMatch } = props;
+  const { result, teamMap, draftOverrides, onScenarioChange, onOpenMatch, onManageResult } = props;
   const rounds = result.projected_path.playoffs.rounds;
   const champion = teamMap.get(result.projected_path.playoffs.champion_id);
   const finalists = rounds[2]?.matches[0];
@@ -632,15 +682,15 @@ function PlayoffsView(props: {
   return <div className="playoffs-view">
     <div className="playoff-intro">
       <div><span className="section-overline">DECEMBER 10 — 13 · SINGAPORE INDOOR STADIUM</span><h2>Eight survive. One lifts the trophy.</h2><p>Projected bracket from the Stage 3 Swiss outcomes. Conditional match odds are shown on each card; title odds account for every simulated path.</p></div>
-      <div className="playoff-champion"><span>PROJECTED PATH WINNER</span><div><TeamMark name={champion?.name ?? "TBD"} /><b>{champion?.name ?? "TBD"}</b></div><strong>{percentage(result.probabilities[champion?.id ?? ""]?.champion.probability)}</strong></div>
+      <div className="playoff-champion"><span>{finalists?.result_status === "confirmed" || finalists?.outcome_source === "completed_result" ? "ACTUAL CHAMPION" : "PROJECTED PATH WINNER"}</span><div><TeamMark name={champion?.name ?? "TBD"} /><b>{champion?.name ?? "TBD"}</b></div><strong>{percentage(result.probabilities[champion?.id ?? ""]?.champion.probability)}</strong></div>
     </div>
     <div className="bracket-caption"><span><i className="bracket-dot dot-confirmed" /> Confirmed result / fixture</span><span><i className="bracket-dot dot-projected" /> Model projected matchup</span><span className="bracket-assumption">Bracket order uses provisional seed ranking</span></div>
     <div className="bracket-board">
-      <BracketColumn title="QUARTERFINALS" subtitle="8 → 4" matches={rounds[0]?.matches ?? []} teamMap={teamMap} draftOverrides={draftOverrides} onScenarioChange={onScenarioChange} onOpenMatch={onOpenMatch} className="bracket-qf" />
+      <BracketColumn title="QUARTERFINALS" subtitle="8 → 4" matches={rounds[0]?.matches ?? []} teamMap={teamMap} draftOverrides={draftOverrides} onScenarioChange={onScenarioChange} onOpenMatch={onOpenMatch} onManageResult={onManageResult} className="bracket-qf" />
       <div className="bracket-connector"><span /><span /><span /><span /></div>
-      <BracketColumn title="SEMIFINALS" subtitle="4 → 2" matches={rounds[1]?.matches ?? []} teamMap={teamMap} draftOverrides={draftOverrides} onScenarioChange={onScenarioChange} onOpenMatch={onOpenMatch} className="bracket-sf" />
+      <BracketColumn title="SEMIFINALS" subtitle="4 → 2" matches={rounds[1]?.matches ?? []} teamMap={teamMap} draftOverrides={draftOverrides} onScenarioChange={onScenarioChange} onOpenMatch={onOpenMatch} onManageResult={onManageResult} className="bracket-sf" />
       <div className="bracket-connector bracket-connector-final"><span /><span /></div>
-      <BracketColumn title="GRAND FINAL" subtitle="2 → 1 · BEST OF 5" matches={rounds[2]?.matches ?? []} teamMap={teamMap} draftOverrides={draftOverrides} onScenarioChange={onScenarioChange} onOpenMatch={onOpenMatch} className="bracket-final" />
+      <BracketColumn title="GRAND FINAL" subtitle="2 → 1 · BEST OF 5" matches={rounds[2]?.matches ?? []} teamMap={teamMap} draftOverrides={draftOverrides} onScenarioChange={onScenarioChange} onOpenMatch={onOpenMatch} onManageResult={onManageResult} className="bracket-final" />
     </div>
     <div className="playoff-bottom-grid">
       <section className="panel finalists-panel"><span className="section-overline">PROJECTED GRAND FINAL</span><h3>{finalists ? `${teamMap.get(finalists.team_a_id)?.name ?? "TBD"} <i>vs</i> ${teamMap.get(finalists.team_b_id)?.name ?? "TBD"}` : "Finalists take shape after the semifinals"}</h3><p>{finalists ? `Conditional series probability: ${percentage(finalists.prediction.team_a_probability)} — ${percentage(finalists.prediction.team_b_probability)}. This is not the same as either team's probability of reaching the final.` : "The bracket is recalculated from the projected Stage 3 qualifiers."}</p></section>
@@ -657,12 +707,13 @@ function BracketColumn(props: {
   draftOverrides: Record<string, string>;
   onScenarioChange: (match: PredictedMatch, winnerId: string) => void;
   onOpenMatch: (match: PredictedMatch) => void;
+  onManageResult: (match: PredictedMatch, action: ResultAction) => void;
   className: string;
 }) {
   return <section className={`bracket-column ${props.className}`}>
     <div className="bracket-column-heading"><div><b>{props.title}</b><span>{props.subtitle}</span></div><i>{props.matches.length} SERIES</i></div>
     <div className="bracket-match-stack">
-      {props.matches.map((match) => <MatchCard key={match.id} match={match} teamMap={props.teamMap} draftOverrides={props.draftOverrides} onScenarioChange={props.onScenarioChange} onOpen={() => props.onOpenMatch(match)} />)}
+      {props.matches.map((match) => <MatchCard key={match.id} match={match} teamMap={props.teamMap} draftOverrides={props.draftOverrides} onScenarioChange={props.onScenarioChange} onOpen={() => props.onOpenMatch(match)} onManageResult={props.onManageResult} />)}
       {!props.matches.length && <div className="empty-bracket">Projected qualifiers appear after Stage 3.</div>}
     </div>
   </section>;
@@ -759,10 +810,13 @@ function MatchDetailPanel(props: {
   teamMap: Map<string, Team>;
   probabilities: TournamentResult["probabilities"] | undefined;
   onClose: () => void;
+  onManageResult: (match: PredictedMatch, action: ResultAction) => void;
 }) {
-  const { match, detail, loading, teamMap, probabilities, onClose } = props;
+  const { match, detail, loading, teamMap, probabilities, onClose, onManageResult } = props;
   const a = teamMap.get(match.team_a_id);
   const b = teamMap.get(match.team_b_id);
+  const confirmed = match.result_status === "confirmed" || match.outcome_source === "completed_result";
+  const prediction = confirmed && match.original_prediction ? match.original_prediction : match.prediction;
   const detailError = typeof detail?.detail_error === "string" ? detail.detail_error : null;
   const h2hCount = typeof detail?.head_to_head_count === "number" ? detail.head_to_head_count : 0;
   const recent = (detail?.recent_results ?? {}) as Record<string, { match_id: string; result: string; opponent_id: string; played_at: string; source: string }[]>;
@@ -770,28 +824,30 @@ function MatchDetailPanel(props: {
   const mapResults = Array.isArray(detail?.map_results) ? detail.map_results as { match_id: string; played_at: string; map_name: string; team_a_name: string; team_b_name: string; team_a_score?: number | null; team_b_score?: number | null }[] : [];
   const mapVetoes = Array.isArray(detail?.map_vetoes) ? detail.map_vetoes as { match_id: string; sequence_no: number; action: string; map_name: string; team_name: string; played_at: string }[] : [];
   const playerStats = Array.isArray(detail?.player_stats) ? detail.player_stats as { player_id: string; name: string; team_name: string; measurement_period: string; metric_version?: string | null; stats: Record<string, string | number | boolean | null> }[] : [];
-  const contextFeatures = match.prediction.context_features ?? [];
+  const contextFeatures = prediction.context_features ?? [];
   const errorProbability = (key: string) => probabilities?.[key]?.champion?.probability ?? 0;
   return <div className="detail-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <aside className="match-detail-panel" role="dialog" aria-modal="true" aria-labelledby="match-detail-title">
       <div className="detail-topline"><span className="section-overline">MATCH INTELLIGENCE · BO{match.best_of}</span><button className="detail-close" onClick={onClose} aria-label="Close match detail">×</button></div>
       <h2 id="match-detail-title">{a?.name ?? match.team_a_id} <i>vs</i> {b?.name ?? match.team_b_id}</h2>
-      <div className={`detail-result-label${match.outcome_source === "completed_result" ? " result-official" : ""}`}><i />{match.outcome_source === "completed_result" ? `Completed result${match.score ? ` · ${match.score}` : ""}` : match.fixture_confirmed ? "Confirmed fixture · result projected" : "Projected pairing · opponents depend on earlier rounds"}</div>
+      <div className={`detail-result-label${match.result_status === "confirmed" || match.outcome_source === "completed_result" ? " result-official" : ""}`}><i />{match.result_status === "confirmed" || match.outcome_source === "completed_result" ? `Confirmed winner: ${teamMap.get(match.confirmed_winner_id ?? match.winner_id ?? "")?.name ?? "Unknown"}${(match.confirmed_score ?? match.score) ? ` · ${match.confirmed_score ?? match.score}` : ""}` : match.fixture_confirmed ? "Confirmed fixture · result projected" : "Projected pairing · opponents depend on earlier rounds"}</div>
+      <div className="detail-result-actions"><button onClick={() => onManageResult(match, match.result_status === "confirmed" || match.outcome_source === "completed_result" ? "edit" : "set")}>{match.result_status === "confirmed" || match.outcome_source === "completed_result" ? "Edit Result" : "Set Result"}</button>{(match.result_status === "confirmed" || match.outcome_source === "completed_result") && <button className="result-clear-button" onClick={() => onManageResult(match, "clear")}>Clear Result</button>}</div>
+      {match.original_prediction && <div className="detail-result-label detail-original-pick"><i />Original model pick: {teamMap.get(match.original_prediction.predicted_winner_id)?.name ?? "Unknown"} · {percentage(match.original_prediction.team_a_probability)} / {percentage(match.original_prediction.team_b_probability)} before the result was entered</div>}
       <div className="detail-probability-pair">
-        <div><TeamMark name={a?.name ?? "TBD"} /><b>{a?.name ?? "TBD"}</b><strong>{percentage(match.prediction.team_a_probability)}</strong><small>MATCH WIN PROBABILITY</small></div>
-        <div><TeamMark name={b?.name ?? "TBD"} /><b>{b?.name ?? "TBD"}</b><strong>{percentage(match.prediction.team_b_probability)}</strong><small>MATCH WIN PROBABILITY</small></div>
+        <div><TeamMark name={a?.name ?? "TBD"} /><b>{a?.name ?? "TBD"}</b><strong>{percentage(prediction.team_a_probability)}</strong><small>{match.original_prediction && confirmed ? "ORIGINAL MATCH PROBABILITY" : "MATCH WIN PROBABILITY"}</small></div>
+        <div><TeamMark name={b?.name ?? "TBD"} /><b>{b?.name ?? "TBD"}</b><strong>{percentage(prediction.team_b_probability)}</strong><small>{match.original_prediction && confirmed ? "ORIGINAL MATCH PROBABILITY" : "MATCH WIN PROBABILITY"}</small></div>
       </div>
-      <div className="probability-track detail-track"><i style={{ width: `${match.prediction.team_a_probability * 100}%` }} /></div>
-      <div className="detail-explanation"><span className="section-overline">WHY THIS PICK?</span><p>{match.prediction.explanation}</p></div>
+      <div className="probability-track detail-track"><i style={{ width: `${prediction.team_a_probability * 100}%` }} /></div>
+      <div className="detail-explanation"><span className="section-overline">WHY THIS PICK?</span><p>{prediction.explanation}</p></div>
       <div className="detail-input-grid">
-        <div><span>{a?.name ?? "Team A"} Elo</span><b>{match.prediction.rating_a.toFixed(0)}</b></div>
-        <div><span>{b?.name ?? "Team B"} Elo</span><b>{match.prediction.rating_b.toFixed(0)}</b></div>
-        <div><span>Baseline reliability</span><b className="reliability-low">{match.prediction.reliability}</b></div>
+        <div><span>{a?.name ?? "Team A"} Elo</span><b>{prediction.rating_a.toFixed(0)}</b></div>
+        <div><span>{b?.name ?? "Team B"} Elo</span><b>{prediction.rating_b.toFixed(0)}</b></div>
+        <div><span>Baseline reliability</span><b className="reliability-low">{prediction.reliability}</b></div>
         <div><span>H2H matches available</span><b>{loading ? "…" : h2hCount}</b></div>
       </div>
       <div className="detail-subsection"><span className="section-overline">PROBABILITY INPUTS · LOG-ODDS ADJUSTMENTS</span>
         <div className="detail-record-list">{contextFeatures.map((item) => <div className="detail-record-row" key={item.key}><span>{item.label} · {item.sample_size} records<br />{item.summary}</span><b>{item.used ? `${item.log_odds_adjustment >= 0 ? "+" : ""}${item.log_odds_adjustment.toFixed(3)}` : "Not used"}</b></div>)}</div>
-        <small className="detail-empty-data">{match.prediction.context_method ?? "Context adjustments are fixed heuristics, not trained coefficients."}</small>
+        <small className="detail-empty-data">{prediction.context_method ?? "Context adjustments are fixed heuristics, not trained coefficients."}</small>
       </div>
       <div className="detail-stage-odds"><span>OVERALL TOURNAMENT ODDS</span><div><b>{a?.name ?? "Team A"} reach title</b><strong>{percentage(errorProbability(match.team_a_id))}</strong></div><div><b>{b?.name ?? "Team B"} reach title</b><strong>{percentage(errorProbability(match.team_b_id))}</strong></div><small>These are unconditional title probabilities, not conditional odds for this matchup.</small></div>
       <div className="detail-subsection"><span className="section-overline">RECENT FORM AVAILABLE AT CUTOFF</span>
@@ -812,7 +868,7 @@ function MatchDetailPanel(props: {
           return <div className="detail-player-row" key={`${item.player_id}:${item.measurement_period}`}><div><b>{item.name}</b><span>{item.team_name} · {item.measurement_period}{item.metric_version ? ` · ${item.metric_version}` : ""}</span></div><small>{metrics.length ? metrics.map(([key, value]) => `${key.replaceAll("_", " ")} ${value ?? "—"}`).join(" · ") : "No numeric summary fields"}</small></div>;
         })}</div> : <small className="detail-empty-data">{loading ? "Loading player data…" : "No cutoff-eligible active-roster statistics imported."}</small>}
       </div>
-      <div className="detail-subsection detail-limits"><span className="section-overline">DATA LIMITS</span><p>{detailError ?? (Array.isArray(match.prediction.warnings) && match.prediction.warnings.length ? match.prediction.warnings.join(" ") : "No warning was generated for this matchup.")}</p><div><span>Map pool and veto history</span><b>{match.prediction.map_veto_used ? "Veto reweighting active" : mapVetoes.length ? "Veto rows present, no map-weight change" : match.prediction.map_pool_used ? "Map results active" : "No eligible records"}</b></div><div><span>Player ratings / roster continuity</span><b>{match.prediction.player_metrics_used || match.prediction.roster_continuity_used ? "Available signals active" : "No comparable snapshot"}</b></div><div><span>Head-to-head signal</span><b>{match.prediction.head_to_head_used ? "Used with recency / roster shrinkage" : "No prior meetings"}</b></div></div>
+      <div className="detail-subsection detail-limits"><span className="section-overline">DATA LIMITS</span><p>{detailError ?? (Array.isArray(prediction.warnings) && prediction.warnings.length ? prediction.warnings.join(" ") : "No warning was generated for this matchup.")}</p><div><span>Map pool and veto history</span><b>{prediction.map_veto_used ? "Veto reweighting active" : mapVetoes.length ? "Veto rows present, no map-weight change" : prediction.map_pool_used ? "Map results active" : "No eligible records"}</b></div><div><span>Player ratings / roster continuity</span><b>{prediction.player_metrics_used || prediction.roster_continuity_used ? "Available signals active" : "No comparable snapshot"}</b></div><div><span>Head-to-head signal</span><b>{prediction.head_to_head_used ? "Used with recency / roster shrinkage" : "No prior meetings"}</b></div></div>
     </aside>
   </div>;
 }
