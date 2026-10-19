@@ -7,8 +7,6 @@ A runnable, local-first tournament predictor for the Singapore Major. It combine
 Requirements: Python 3.11+ and Node.js 20+.
 
 ```bash
-cd outputs/major-predictor
-
 # Terminal 1 — API and SQLite database
 python3 -m venv .venv
 source .venv/bin/activate
@@ -30,7 +28,6 @@ The API creates `backend/data/major.sqlite3` on first startup with the event and
 ### Docker Compose (optional)
 
 ```bash
-cd outputs/major-predictor
 docker compose up --build
 ```
 
@@ -88,7 +85,6 @@ For completed Singapore Major matches, set `stage_slug`, `round_no`, `status: "c
 ## Verification
 
 ```bash
-cd outputs/major-predictor
 PYTHONPATH=backend .venv/bin/python -m pytest backend/tests -q
 npm test
 npm run build
