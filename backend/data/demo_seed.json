@@ -1,0 +1,137 @@
+{
+  "source": "synthetic demonstration dataset",
+  "event": {
+    "id": "pgl-major-singapore-2026",
+    "name": "PGL CS2 Major Singapore 2026",
+    "organizer": "PGL",
+    "start_date": "2026-11-25",
+    "end_date": "2026-12-13",
+    "location": "Singapore",
+    "details_status": "partially_confirmed",
+    "source_urls": [
+      "https://www.pglesports.com/cs2/pgl-major-singapore-2026/",
+      "https://www.hltv.org/major/"
+    ]
+  },
+  "notes": [
+    "All demo team names, Elo values, and simulated outcomes are synthetic and are not HLTV records.",
+    "PGL confirms the event window and 32-team, three-stage structure; HLTV lists stage dates that begin one day before PGL's published event start.",
+    "The participant slots and exact pairing/seeding rules are not locked in this dataset."
+  ],
+  "stages": [
+    {
+      "slug": "stage1",
+      "name": "Stage 1",
+      "start_date": "2026-11-24",
+      "end_date": "2026-11-27",
+      "entrants": 16,
+      "advances": 8,
+      "rules": {
+        "type": "swiss",
+        "wins_to_advance": 3,
+        "losses_to_eliminate": 3,
+        "max_rounds": 5,
+        "opening_match_best_of": 1,
+        "decider_match_best_of": 3,
+        "pairing": "same-record groups; seed order; top half versus bottom half",
+        "avoid_rematches": true,
+        "tiebreakers": ["wins-losses record", "configured seed"],
+        "seeding": "provisional stage entrant seed",
+        "status": "provisional"
+      }
+    },
+    {
+      "slug": "stage2",
+      "name": "Stage 2",
+      "start_date": "2026-11-28",
+      "end_date": "2026-12-01",
+      "entrants": 16,
+      "advances": 8,
+      "rules": {
+        "type": "swiss",
+        "wins_to_advance": 3,
+        "losses_to_eliminate": 3,
+        "max_rounds": 5,
+        "opening_match_best_of": 1,
+        "decider_match_best_of": 3,
+        "pairing": "same-record groups; seed order; top half versus bottom half",
+        "avoid_rematches": true,
+        "tiebreakers": ["wins-losses record", "configured seed"],
+        "seeding": "provisional stage entrant seed",
+        "status": "provisional"
+      }
+    },
+    {
+      "slug": "stage3",
+      "name": "Stage 3",
+      "start_date": "2026-12-02",
+      "end_date": "2026-12-06",
+      "entrants": 16,
+      "advances": 8,
+      "rules": {
+        "type": "swiss",
+        "wins_to_advance": 3,
+        "losses_to_eliminate": 3,
+        "max_rounds": 5,
+        "opening_match_best_of": 3,
+        "decider_match_best_of": 3,
+        "all_matches_best_of_three": true,
+        "pairing": "same-record groups; seed order; top half versus bottom half",
+        "avoid_rematches": true,
+        "tiebreakers": ["wins-losses record", "configured seed"],
+        "seeding": "provisional stage entrant seed",
+        "status": "provisional"
+      }
+    },
+    {
+      "slug": "playoffs",
+      "name": "Playoffs",
+      "start_date": "2026-12-10",
+      "end_date": "2026-12-13",
+      "entrants": 8,
+      "advances": 1,
+      "rules": {
+        "type": "single_elimination",
+        "quarterfinal_best_of": 3,
+        "semifinal_best_of": 3,
+        "final_best_of": 5,
+        "quarterfinal_seeding": "1v8, 4v5, 2v7, 3v6 by provisional seed",
+        "status": "formats confirmed by HLTV; exact bracket seeding provisional"
+      }
+    }
+  ],
+  "teams": [
+    {"id":"demo-01","name":"Arcadium","region":"Europe","seed":1,"elo_rating":1748,"stage_entry":"stage3"},
+    {"id":"demo-02","name":"Blue Shift","region":"Europe","seed":2,"elo_rating":1724,"stage_entry":"stage3"},
+    {"id":"demo-03","name":"Crossfire","region":"Americas","seed":3,"elo_rating":1702,"stage_entry":"stage3"},
+    {"id":"demo-04","name":"Daybreak","region":"Europe","seed":4,"elo_rating":1680,"stage_entry":"stage3"},
+    {"id":"demo-05","name":"Eclipse","region":"Europe","seed":5,"elo_rating":1662,"stage_entry":"stage3"},
+    {"id":"demo-06","name":"Foundry","region":"Asia","seed":6,"elo_rating":1643,"stage_entry":"stage3"},
+    {"id":"demo-07","name":"Goliath","region":"Americas","seed":7,"elo_rating":1625,"stage_entry":"stage3"},
+    {"id":"demo-08","name":"Horizon","region":"Europe","seed":8,"elo_rating":1606,"stage_entry":"stage3"},
+    {"id":"demo-09","name":"Quartz","region":"Europe","seed":9,"elo_rating":1593,"stage_entry":"stage2"},
+    {"id":"demo-10","name":"Rogue Signal","region":"Americas","seed":10,"elo_rating":1580,"stage_entry":"stage2"},
+    {"id":"demo-11","name":"Sable","region":"Europe","seed":11,"elo_rating":1566,"stage_entry":"stage2"},
+    {"id":"demo-12","name":"Tidal Wave","region":"Asia","seed":12,"elo_rating":1552,"stage_entry":"stage2"},
+    {"id":"demo-13","name":"Umbra","region":"Europe","seed":13,"elo_rating":1538,"stage_entry":"stage2"},
+    {"id":"demo-14","name":"Vanguard X","region":"Americas","seed":14,"elo_rating":1522,"stage_entry":"stage2"},
+    {"id":"demo-15","name":"Wildcard Labs","region":"Asia","seed":15,"elo_rating":1507,"stage_entry":"stage2"},
+    {"id":"demo-16","name":"Zero Hour","region":"Europe","seed":16,"elo_rating":1491,"stage_entry":"stage2"},
+    {"id":"demo-17","name":"Aether","region":"Europe","seed":17,"elo_rating":1480,"stage_entry":"stage1"},
+    {"id":"demo-18","name":"Black Signal","region":"Europe","seed":18,"elo_rating":1468,"stage_entry":"stage1"},
+    {"id":"demo-19","name":"Cipher Nine","region":"Americas","seed":19,"elo_rating":1457,"stage_entry":"stage1"},
+    {"id":"demo-20","name":"Deadlock","region":"Asia","seed":20,"elo_rating":1445,"stage_entry":"stage1"},
+    {"id":"demo-21","name":"Echo Unit","region":"Europe","seed":21,"elo_rating":1433,"stage_entry":"stage1"},
+    {"id":"demo-22","name":"Frostline","region":"Americas","seed":22,"elo_rating":1422,"stage_entry":"stage1"},
+    {"id":"demo-23","name":"Gravitas","region":"Europe","seed":23,"elo_rating":1410,"stage_entry":"stage1"},
+    {"id":"demo-24","name":"Hex Circuit","region":"Asia","seed":24,"elo_rating":1398,"stage_entry":"stage1"},
+    {"id":"demo-25","name":"Ironclad","region":"Europe","seed":25,"elo_rating":1387,"stage_entry":"stage1"},
+    {"id":"demo-26","name":"Jetstream","region":"Americas","seed":26,"elo_rating":1375,"stage_entry":"stage1"},
+    {"id":"demo-27","name":"Kestrel","region":"Europe","seed":27,"elo_rating":1363,"stage_entry":"stage1"},
+    {"id":"demo-28","name":"Lumen","region":"Asia","seed":28,"elo_rating":1352,"stage_entry":"stage1"},
+    {"id":"demo-29","name":"Midnight Oil","region":"Europe","seed":29,"elo_rating":1340,"stage_entry":"stage1"},
+    {"id":"demo-30","name":"Neon Archive","region":"Americas","seed":30,"elo_rating":1328,"stage_entry":"stage1"},
+    {"id":"demo-31","name":"Outriders","region":"Europe","seed":31,"elo_rating":1317,"stage_entry":"stage1"},
+    {"id":"demo-32","name":"Parallax","region":"Asia","seed":32,"elo_rating":1305,"stage_entry":"stage1"}
+  ]
+}
