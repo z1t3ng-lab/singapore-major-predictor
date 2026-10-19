@@ -1,11 +1,13 @@
 import json
 import random
+import builtins
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from app.engine import (
+    MatchDependencyConflict,
     map_win_probability,
     match_key,
     predict_match,
@@ -110,6 +112,79 @@ def test_confirmed_completed_results_override_model_outcome():
     assert found["score"] == "0:1"
 
 
+def test_confirmed_generated_upset_is_locked_into_projection_and_every_simulation():
+    entrants = [team(i) for i in range(1, 17)]
+    key = match_key("stage1", 1, "team-01", "team-16")
+    confirmed = {
+        "id": key,
+        "fixture_type": "generated",
+        "stage_slug": "stage1",
+        "round_no": 1,
+        "team_a_id": "team-01",
+        "team_b_id": "team-16",
+        "best_of": 1,
+        "status": "completed",
+        "result_status": "confirmed",
+        "confirmed_winner_id": "team-16",
+        "result_source": "manual",
+        "confirmed_score": "0:1",
+    }
+    first = simulate_swiss(entrants, swiss_rules(), "stage1", predictor, random.Random(11), True, actual_matches=[confirmed])
+    second = simulate_swiss(entrants, swiss_rules(), "stage1", predictor, random.Random(11), True, actual_matches=[confirmed])
+    for outcome in (first, second):
+        match = next(item for item in outcome["rounds"][0]["matches"] if item["id"] == key)
+        assert match["winner_id"] == "team-16"
+        assert match["original_prediction"] is None
+        standings = {item["id"]: item for item in outcome["rounds"][0]["standings"]}
+        assert (standings["team-16"]["wins"], standings["team-16"]["losses"]) == (1, 0)
+        assert (standings["team-01"]["wins"], standings["team-01"]["losses"]) == (0, 1)
+
+
+def test_confirmed_playoff_upset_advances_actual_winner_to_semifinals():
+    qualifiers = [team(i) for i in (1, 3, 4, 5, 7, 10, 12, 18)]
+    initial = simulate_playoffs(qualifiers, predictor, random.Random(17), True)
+    quarterfinal = initial["rounds"][0]["matches"][0]
+    actual_winner = quarterfinal["team_b_id"] if quarterfinal["winner_id"] == quarterfinal["team_a_id"] else quarterfinal["team_a_id"]
+    confirmed = {
+        "id": quarterfinal["id"],
+        "fixture_type": "generated",
+        "stage_slug": "playoffs",
+        "round_no": 1,
+        "team_a_id": quarterfinal["team_a_id"],
+        "team_b_id": quarterfinal["team_b_id"],
+        "best_of": 3,
+        "status": "completed",
+        "result_status": "confirmed",
+        "confirmed_winner_id": actual_winner,
+        "result_source": "manual",
+    }
+    updated = simulate_playoffs(qualifiers, predictor, random.Random(17), True, actual_matches=[confirmed])
+    assert updated["rounds"][0]["matches"][0]["winner_id"] == actual_winner
+    semifinals = updated["rounds"][1]["matches"]
+    assert any(actual_winner in (match["team_a_id"], match["team_b_id"]) for match in semifinals)
+    assert updated["champion_id"] in {item["id"] for item in qualifiers}
+
+
+def test_confirmed_official_result_outside_rebuilt_path_is_reported_as_dependency_conflict():
+    entrants, rules = full_inputs()
+    official_result = {
+        "id": "official-stage1-round6-result",
+        "fixture_type": "official",
+        "stage_slug": "stage1",
+        "round_no": 6,
+        "team_a_id": "team-17",
+        "team_b_id": "team-18",
+        "status": "completed",
+        "result_status": "confirmed",
+        "winner_id": "team-17",
+    }
+    with pytest.raises(MatchDependencyConflict) as caught:
+        simulate_tournament(entrants, rules, predictor, simulations=2, seed=17, actual_matches=[official_result])
+    assert caught.value.conflicts[0]["id"] == official_result["id"]
+    assert caught.value.conflicts[0]["fixture_type"] == "official"
+    assert caught.value.conflicts[0]["can_invalidate"] is True
+
+
 def test_scenario_override_changes_projected_winner():
     entrants = [team(i) for i in range(1, 17)]
     key = match_key("stage1", 1, "team-01", "team-16")
@@ -206,7 +281,7 @@ def test_external_team_rating_is_not_used_before_its_record_availability():
     assert available["ratings"][teams[0]["id"]] == teams[0]["elo_rating"]
 
 
-def test_sufficient_history_trains_and_reports_chronological_holdout_metrics():
+def test_sufficient_history_trains_and_result_recalculation_reuses_model_weights(monkeypatch):
     teams = [team(i) for i in range(1, 9)]
     matches = []
     start = datetime(2025, 1, 1, tzinfo=timezone.utc)
@@ -228,6 +303,25 @@ def test_sufficient_history_trains_and_reports_chronological_holdout_metrics():
     assert snapshot["eligible_matches"] == 220
     assert snapshot["status"] == "trained_chronological_split"
     assert {"log_loss", "brier_score", "accuracy", "calibration_error_5_bins"}.issubset(snapshot["metrics"])
+
+    trained_state = snapshot["state"]
+    changed_matches = [dict(match) for match in matches]
+    changed_matches[-1]["winner_id"] = changed_matches[-1]["team_b_id"] if changed_matches[-1]["winner_id"] == changed_matches[-1]["team_a_id"] else changed_matches[-1]["team_a_id"]
+    original_import = builtins.__import__
+
+    def no_sklearn_retraining(name, *args, **kwargs):
+        if name.startswith("sklearn"):
+            raise AssertionError("A result-only recalculation must reuse the trained model.")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_sklearn_retraining)
+    recalculated = build_model_snapshot(
+        teams, changed_matches, "2026-10-01T00:00:00Z", model_state=trained_state, allow_training=False,
+    )
+    assert recalculated["status"] == "trained_chronological_split"
+    assert recalculated["state"]["coefficients"] == trained_state["coefficients"]
+    assert recalculated["state"]["intercept"] == trained_state["intercept"]
+    assert recalculated["ratings"] != snapshot["ratings"]
 
 
 def test_demo_data_and_hltv_provider_are_not_misrepresented_as_real():

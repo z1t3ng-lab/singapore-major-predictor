@@ -1,7 +1,43 @@
 from fastapi.testclient import TestClient
 
 from app import database
+from app import main as main_module
 from app.main import app
+
+
+def _path_matches(result):
+    return [
+        *[
+            match
+            for stage in result["projected_path"]["stages"].values()
+            for round_data in stage["rounds"]
+            for match in round_data["matches"]
+        ],
+        *[
+            match
+            for round_data in result["projected_path"]["playoffs"]["rounds"]
+            for match in round_data["matches"]
+        ],
+    ]
+
+
+def _simulate(client, simulations=8):
+    response = client.post("/api/simulate", json={
+        "simulations": simulations,
+        "seed": 73,
+        "cutoff": "2026-10-19T12:00:00Z",
+    })
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _confirm(client, match, winner_id, score=None, expected_version=0, invalidate_conflict_ids=None):
+    return client.put(f"/api/matches/{match['id']}/result", json={
+        "winner_id": winner_id,
+        "score": score,
+        "expected_result_version": expected_version,
+        "invalidate_conflict_ids": invalidate_conflict_ids or [],
+    })
 
 
 def test_roster_history_is_cutoff_aware_and_demo_source_is_labeled(tmp_path, monkeypatch):
@@ -179,4 +215,193 @@ def test_schema_migration_adds_roster_availability_to_existing_database(tmp_path
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(roster_memberships)")}
         versions = {row["version"] for row in connection.execute("SELECT version FROM schema_migrations")}
         assert "available_at" in columns
-        assert {1, 2, 3}.issubset(versions)
+        match_columns = {row["name"] for row in connection.execute("PRAGMA table_info(matches)")}
+        run_columns = {row["name"] for row in connection.execute("PRAGMA table_info(prediction_runs)")}
+        assert {1, 2, 3, 4}.issubset(versions)
+        assert {"fixture_type", "result_status", "confirmed_winner_id", "confirmed_score", "result_version", "original_prediction_json"}.issubset(match_columns)
+        assert {"state_version", "result_json"}.issubset(run_columns)
+
+
+def test_manual_result_upset_edit_clear_recalculation_and_persistence(tmp_path, monkeypatch):
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "manual-result.sqlite3")
+    with TestClient(app) as client:
+        assert client.post("/api/demo").status_code == 200
+        before = _simulate(client)
+        original = before["projected_path"]["stages"]["stage1"]["rounds"][0]["matches"][0]
+        original_prediction = original["prediction"]
+        upset_winner = original["team_b_id"] if original_prediction["predicted_winner_id"] == original["team_a_id"] else original["team_a_id"]
+        score = "1:0" if upset_winner == original["team_a_id"] else "0:1"
+
+        saved = _confirm(client, original, upset_winner, score)
+        assert saved.status_code == 200, saved.text
+        response = saved.json()
+        updated = next(match for match in _path_matches(response["result"]) if match["id"] == original["id"])
+        assert updated["result_status"] == "confirmed"
+        assert updated["confirmed_winner_id"] == upset_winner
+        assert updated["winner_id"] == upset_winner
+        assert updated["score"] == score
+        assert updated["original_prediction"]["predicted_winner_id"] == original_prediction["predicted_winner_id"]
+        assert updated["original_prediction"]["team_a_probability"] == original_prediction["team_a_probability"]
+        assert updated["prediction"]["team_a_probability"] == original_prediction["team_a_probability"]
+        assert updated["prediction"]["team_a_probability"] != 1.0
+        standings = {team["id"]: team for team in response["result"]["projected_path"]["stages"]["stage1"]["rounds"][0]["standings"]}
+        loser = original["team_b_id"] if upset_winner == original["team_a_id"] else original["team_a_id"]
+        assert (standings[upset_winner]["wins"], standings[upset_winner]["losses"]) == (1, 0)
+        assert (standings[loser]["wins"], standings[loser]["losses"]) == (0, 1)
+
+        repeated = _simulate(client)
+        repeated_match = next(match for match in _path_matches(repeated) if match["id"] == original["id"])
+        assert repeated_match["winner_id"] == upset_winner
+        repeated_standings = {team["id"]: team for team in repeated["projected_path"]["stages"]["stage1"]["rounds"][0]["standings"]}
+        assert (repeated_standings[upset_winner]["wins"], repeated_standings[upset_winner]["losses"]) == (1, 0)
+        assert (repeated_standings[loser]["wins"], repeated_standings[loser]["losses"]) == (0, 1)
+        stale = _confirm(client, original, original["winner_id"], expected_version=0)
+        assert stale.status_code == 409
+
+        edited = _confirm(client, original, original["winner_id"], "1:0" if original["winner_id"] == original["team_a_id"] else "0:1", expected_version=1)
+        assert edited.status_code == 200, edited.text
+        edited_match = next(match for match in _path_matches(edited.json()["result"]) if match["id"] == original["id"])
+        assert edited_match["winner_id"] == original["winner_id"]
+        assert edited_match["result_version"] == 2
+        assert edited_match["original_prediction"]["predicted_winner_id"] == original_prediction["predicted_winner_id"]
+
+        cleared = client.request("DELETE", f"/api/matches/{original['id']}/result", json={"expected_result_version": 2})
+        assert cleared.status_code == 200, cleared.text
+        cleared_match = next(match for match in _path_matches(cleared.json()["result"]) if match["id"] == original["id"])
+        assert cleared_match["result_status"] == "cleared"
+        assert cleared_match["confirmed_winner_id"] is None
+        assert cleared_match["original_prediction"]["predicted_winner_id"] == original_prediction["predicted_winner_id"]
+
+    # A new app lifespan reads the durable result fields from SQLite.
+    with TestClient(app) as restarted:
+        persisted = _simulate(restarted)
+        cleared_match = next(match for match in _path_matches(persisted) if match["id"] == original["id"])
+        assert cleared_match["result_status"] == "cleared"
+        assert cleared_match["confirmed_winner_id"] is None
+
+
+def test_result_rejects_unrelated_winners_and_inconsistent_scores(tmp_path, monkeypatch):
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "invalid-result.sqlite3")
+    with TestClient(app) as client:
+        assert client.post("/api/demo").status_code == 200
+        result = _simulate(client)
+        match = result["projected_path"]["stages"]["stage1"]["rounds"][0]["matches"][0]
+        unrelated = _confirm(client, match, "team-not-in-this-match")
+        assert unrelated.status_code == 422
+        winner = match["team_a_id"]
+        mismatched = _confirm(client, match, winner, "0:1")
+        assert mismatched.status_code == 422
+        valid = _confirm(client, match, winner, "1:0")
+        assert valid.status_code == 200, valid.text
+
+
+def test_changed_earlier_result_requires_explicit_downstream_invalidation(tmp_path, monkeypatch):
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "result-conflict.sqlite3")
+    with TestClient(app) as client:
+        assert client.post("/api/demo").status_code == 200
+        first_result = _simulate(client)
+        stage1 = first_result["projected_path"]["stages"]["stage1"]
+        first = stage1["rounds"][0]["matches"][0]
+        unchanged = stage1["rounds"][0]["matches"][1]
+        first_saved = _confirm(client, first, first["winner_id"])
+        assert first_saved.status_code == 200, first_saved.text
+        current = first_saved.json()["result"]
+        second_round = current["projected_path"]["stages"]["stage1"]["rounds"][1]
+        first_winner = first["winner_id"]
+        dependent = next(match for match in second_round["matches"] if first_winner in (match["team_a_id"], match["team_b_id"]))
+        dependent_saved = _confirm(client, dependent, dependent["winner_id"])
+        assert dependent_saved.status_code == 200, dependent_saved.text
+        unrelated_saved = _confirm(client, unchanged, unchanged["winner_id"])
+        assert unrelated_saved.status_code == 200, unrelated_saved.text
+
+        upset_winner = first["team_b_id"] if first["winner_id"] == first["team_a_id"] else first["team_a_id"]
+        conflict = _confirm(client, first, upset_winner, expected_version=1)
+        assert conflict.status_code == 409
+        conflict_ids = [item["id"] for item in conflict.json()["detail"]["conflicts"]]
+        assert dependent["id"] in conflict_ids
+
+        resolved = _confirm(client, first, upset_winner, expected_version=1, invalidate_conflict_ids=conflict_ids)
+        assert resolved.status_code == 200, resolved.text
+        assert dependent["id"] in resolved.json()["invalidated_result_ids"]
+        final_matches = _path_matches(resolved.json()["result"])
+        current_first = next(match for match in final_matches if match["id"] == first["id"])
+        current_unaffected = next(match for match in final_matches if match["id"] == unchanged["id"])
+        assert current_first["winner_id"] == upset_winner
+        assert current_unaffected["result_status"] == "confirmed"
+        with database.connect() as connection:
+            invalidated = connection.execute("SELECT result_status,confirmed_winner_id FROM matches WHERE id=?", (dependent["id"],)).fetchone()
+            assert invalidated["result_status"] == "cleared"
+            assert invalidated["confirmed_winner_id"] is None
+
+
+def test_playoff_upset_recalculates_semifinal_slots_and_title_probabilities(tmp_path, monkeypatch):
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "playoff-result.sqlite3")
+    with TestClient(app) as client:
+        assert client.post("/api/demo").status_code == 200
+        result = _simulate(client)
+        qf = result["projected_path"]["playoffs"]["rounds"][0]["matches"][0]
+        winner = qf["team_b_id"] if qf["winner_id"] == qf["team_a_id"] else qf["team_a_id"]
+        response = _confirm(client, qf, winner)
+        assert response.status_code == 200, response.text
+        updated = response.json()["result"]
+        current_qf = next(match for match in updated["projected_path"]["playoffs"]["rounds"][0]["matches"] if match["id"] == qf["id"])
+        assert current_qf["winner_id"] == winner
+        semifinals = updated["projected_path"]["playoffs"]["rounds"][1]["matches"]
+        assert any(winner in (match["team_a_id"], match["team_b_id"]) for match in semifinals)
+        assert updated["championship_probability_sum"] == 1.0
+
+
+def test_manual_result_availability_respects_prediction_cutoff(tmp_path, monkeypatch):
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "result-cutoff.sqlite3")
+    with TestClient(app) as client:
+        assert client.post("/api/demo").status_code == 200
+        initial = _simulate(client)
+        opening = initial["projected_path"]["stages"]["stage1"]["rounds"][0]["matches"][0]
+        imported = client.post("/api/import/json", json={
+            "matches": [{
+                "id": "cutoff-fixture",
+                "stage_slug": "stage1",
+                "round_no": 1,
+                "team_a_id": opening["team_a_id"],
+                "team_b_id": opening["team_b_id"],
+                "best_of": 1,
+                "status": "scheduled",
+                "played_at": "2026-10-18T12:00:00Z",
+                "available_at": "2026-10-18T13:00:00Z",
+            }],
+        })
+        assert imported.status_code == 200, imported.text
+        current = client.post("/api/simulate", json={
+            "simulations": 4, "seed": 73, "cutoff": "2026-10-19T00:00:00Z",
+        }).json()
+        fixture_match = next(
+            match for match in current["projected_path"]["stages"]["stage1"]["rounds"][0]["matches"]
+            if match["fixture_id"] == "cutoff-fixture"
+        )
+        saved = _confirm(client, fixture_match, fixture_match["team_a_id"])
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["result"]["model"]["eligible_matches"] == 0
+        with database.connect() as connection:
+            row = connection.execute("SELECT available_at,result_source FROM matches WHERE id='cutoff-fixture'").fetchone()
+            assert row["result_source"] == "manual"
+            assert row["available_at"] > "2026-10-19T00:00:00Z"
+
+
+def test_prediction_started_on_old_state_cannot_persist_after_result_state_changes(tmp_path, monkeypatch):
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "stale-prediction.sqlite3")
+    with TestClient(app) as client:
+        assert client.post("/api/demo").status_code == 200
+        original_builder = main_module._build_tournament_result
+
+        def simulate_then_change_state(connection, *args, **kwargs):
+            result = original_builder(connection, *args, **kwargs)
+            with database.connect() as concurrent_connection:
+                database.bump_state_version(concurrent_connection)
+            return result
+
+        monkeypatch.setattr(main_module, "_build_tournament_result", simulate_then_change_state)
+        stale = client.post("/api/simulate", json={"simulations": 2, "seed": 73})
+        assert stale.status_code == 409
+        assert "changed while this prediction was running" in stale.json()["detail"]
+        with database.connect() as connection:
+            assert connection.execute("SELECT COUNT(*) FROM prediction_runs").fetchone()[0] == 0
