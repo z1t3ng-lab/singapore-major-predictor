@@ -1,0 +1,10 @@
+node_modules
+.next
+.git
+.venv
+__pycache__
+.pytest_cache
+.env.local
+backend/data/*.sqlite3
+backend/data/*.sqlite3-shm
+backend/data/*.sqlite3-wal
