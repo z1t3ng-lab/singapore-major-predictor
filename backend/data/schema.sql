@@ -85,8 +85,20 @@ CREATE TABLE IF NOT EXISTS matches (
     source_url TEXT,
     retrieved_at TEXT,
     parsing_error TEXT,
+    fixture_type TEXT NOT NULL DEFAULT 'official',
+    result_status TEXT NOT NULL DEFAULT 'pending',
+    confirmed_winner_id TEXT REFERENCES teams(id),
+    confirmed_score TEXT,
+    result_source TEXT,
+    result_created_at TEXT,
+    result_updated_at TEXT,
+    result_version INTEGER NOT NULL DEFAULT 0,
+    original_prediction_json TEXT,
+    original_prediction_at TEXT,
+    prediction_version TEXT,
     CHECK(team_a_id <> team_b_id),
-    CHECK(winner_id IS NULL OR winner_id = team_a_id OR winner_id = team_b_id)
+    CHECK(winner_id IS NULL OR winner_id = team_a_id OR winner_id = team_b_id),
+    CHECK(confirmed_winner_id IS NULL OR confirmed_winner_id = team_a_id OR confirmed_winner_id = team_b_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_matches_event_stage_round
@@ -137,7 +149,9 @@ CREATE TABLE IF NOT EXISTS prediction_runs (
     simulations INTEGER NOT NULL,
     model_name TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    scenario_json TEXT NOT NULL
+    scenario_json TEXT NOT NULL,
+    state_version INTEGER NOT NULL DEFAULT 0,
+    result_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS source_log (
