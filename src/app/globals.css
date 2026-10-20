@@ -256,6 +256,37 @@ h1, h2, h3, p { margin-top: 0; }
 .notice-strip > div { display: flex; flex-direction: column; gap: 4px; }
 .notice-strip b { color: #b8e5df; font-size: 9px; }
 .notice-strip div span { color: #8a9a95; font-size: 9px; line-height: 1.4; }
+.swiss-overview { background: radial-gradient(ellipse at 100% 0%, #1e3b3a36, transparent 36%), #0f1517; border: 1px solid #29373a; border-radius: 10px; overflow: hidden; padding: 16px; }
+.swiss-overview-heading { align-items: end; display: flex; justify-content: space-between; gap: 16px; }
+.swiss-overview-heading h2 { color: #e0e9e4; font-size: 18px; margin: 5px 0 0; }
+.swiss-legend { align-items: center; color: #82908a; display: flex; flex-wrap: wrap; font-size: 8px; gap: 10px; justify-content: flex-end; }
+.swiss-legend span { align-items: center; display: inline-flex; gap: 5px; }
+.swiss-legend i { border-radius: 50%; display: inline-block; height: 7px; width: 7px; }
+.swiss-legend-predicted { background: #89a99a; opacity: .42; }.swiss-legend-confirmed { background: var(--mint); box-shadow: 0 0 8px #61d38e88; }
+.swiss-overview-copy { color: #81908a; font-size: 9px; line-height: 1.5; margin: 8px 0 15px; max-width: 700px; }
+.swiss-board-wrap { margin: 0 -16px; overflow-x: auto; padding: 0 16px 8px; }
+.swiss-board { display: flex; gap: 20px; min-width: max-content; padding-right: 12px; }
+.swiss-column { display: flex; flex-direction: column; gap: 12px; min-height: 240px; position: relative; width: 208px; }
+.swiss-column:not(:last-child)::after { border-top: 1px solid #314047; content: ""; position: absolute; right: -19px; top: 104px; width: 18px; }
+.swiss-flow-arrow { align-items: center; background: #172126; border: 1px solid #34454c; border-radius: 50%; color: #85a399; display: flex; font-size: 10px; height: 18px; justify-content: center; position: absolute; right: -29px; top: 95px; width: 18px; z-index: 2; }
+.swiss-column-heading { border-bottom: 1px solid #29363a; display: flex; flex-direction: column; gap: 4px; padding-bottom: 9px; }
+.swiss-column-heading span { color: #73978a; font-size: 7px; font-weight: 850; letter-spacing: 1px; }.swiss-column-heading b { color: #cedad4; font-size: 10px; }
+.swiss-record-group { display: flex; flex-direction: column; gap: 6px; }
+.swiss-record-label { align-items: center; background: #1c2a2c; border-left: 3px solid #66848a; color: #c8d7d2; display: flex; justify-content: space-between; min-height: 22px; padding: 0 7px; }
+.swiss-record-label b { font-size: 9px; }.swiss-record-label span { color: #7e9089; font-size: 6px; font-weight: 800; letter-spacing: .6px; }
+.swiss-record-label.swiss-record-1-0, .swiss-record-label.swiss-record-2-0 { background: #163023; border-color: #35c67a; }.swiss-record-label.swiss-record-0-1, .swiss-record-label.swiss-record-0-2 { background: #321d24; border-color: #e25065; }
+.swiss-match-list { display: flex; flex-direction: column; gap: 6px; }
+.swiss-match { background: #151d20; border: 1px solid #2a383d; border-radius: 5px; overflow: hidden; opacity: .62; padding: 7px; transition: opacity .16s ease, border-color .16s ease; }
+.swiss-match:hover { border-color: #506a64; opacity: .88; }.swiss-match-confirmed { background: #15231d; border-color: #3d7d57; box-shadow: 0 0 0 1px #3d7d5722; opacity: 1; }
+.swiss-match-top { color: #71827b; display: flex; font-size: 6px; font-weight: 800; justify-content: space-between; letter-spacing: .6px; margin-bottom: 4px; }
+.swiss-team { align-items: center; color: #9caea5; display: grid; font-size: 8px; gap: 5px; grid-template-columns: 16px minmax(0, 1fr) 29px; min-height: 23px; }
+.swiss-team + .swiss-team { border-top: 1px solid #263237; }.swiss-team b { font-weight: 680; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.swiss-team small { color: #74827d; font-size: 7px; text-align: right; }
+.swiss-team-mark { align-items: center; background: #27363a; border-radius: 3px; color: #c2d1cc; display: flex; font-size: 6px; font-weight: 850; height: 15px; justify-content: center; width: 15px; }
+.swiss-team-winner { color: #9bd8af; }.swiss-team-winner .swiss-team-mark { background: #2c5940; color: #d3f5de; }.swiss-team-actual { color: #d5f5df; font-weight: 760; }.swiss-team-actual small { color: #92d9a7; font-weight: 850; }
+.swiss-vs { color: #60716a; font-size: 6px; font-weight: 850; letter-spacing: .6px; line-height: 12px; text-align: center; }
+.swiss-pick { border-top: 1px solid #29363a; color: #75847d; display: flex; font-size: 6px; gap: 4px; margin-top: 5px; padding-top: 5px; }
+.swiss-pick span { letter-spacing: .45px; }.swiss-pick b { color: #aec1b8; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.swiss-pick em { color: #8ee0a9; font-style: normal; font-weight: 850; margin-left: auto; }.swiss-pick .swiss-pick-missed { color: #d9b96d; }
+.swiss-overview-note { border-top: 1px solid #283438; color: #778780; display: flex; font-size: 8px; gap: 7px; line-height: 1.45; margin-top: 8px; padding-top: 10px; }.swiss-overview-note > span:first-child { color: var(--cyan); }.swiss-overview-note b { color: #b6c8c0; }
 .stage-layout { align-items: flex-start; display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr) minmax(265px, .38fr); }
 .rounds-column { min-width: 0; }
 .subsection-title { align-items: flex-end; display: flex; justify-content: space-between; margin: 4px 0 17px; }
@@ -722,6 +753,11 @@ h1, h2, h3, p { margin-top: 0; }
   .pending-phase-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 760px) {
+  .swiss-overview { margin-left: -1px; margin-right: -1px; padding: 13px; }
+  .swiss-overview-heading { align-items: flex-start; flex-direction: column; gap: 9px; }
+  .swiss-legend { justify-content: flex-start; line-height: 1.5; }
+  .swiss-board-wrap { margin: 0 -13px; padding-left: 13px; }
+  .swiss-column { width: 190px; }
   .field-pending-view { gap: 16px; }
   .field-pending-hero { align-items: flex-start; gap: 20px; grid-template-columns: 1fr; min-height: 0; padding: 21px 17px; }
   .pending-orbit { border-radius: 17px; font-size: 20px; height: 63px; width: 63px; }

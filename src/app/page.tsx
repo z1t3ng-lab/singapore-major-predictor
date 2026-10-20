@@ -3,6 +3,7 @@
 import React, { FormEvent, useEffect, useMemo, useState } from "react";
 import { MatchCard } from "@/components/MatchCard";
 import { ResultDialog, type ResultAction } from "@/components/ResultDialog";
+import { SwissOverview } from "@/components/SwissOverview";
 import { getMatchDetail, getOverview, getTeams, importFile, loadDemoDataset, runSimulation } from "@/lib/api";
 import { exportRows, percentage, rowsToCsv, scenarioChanged, setScenarioWinner } from "@/lib/helpers";
 import type { Overview, PredictedMatch, Team, TournamentResult } from "@/lib/types";
@@ -627,6 +628,8 @@ function StageView(props: {
     </div>
 
     <div className="notice-strip"><span>ⓘ</span><div><b>Pairings are conditional</b><span>Each next-round pairing is generated after the previous simulated results. These cards show one coherent model-projected path, not confirmed fixtures.</span></div></div>
+
+    <SwissOverview stage={stage} teamMap={teamMap} />
 
     <div className="stage-layout">
       <div className="rounds-column">
