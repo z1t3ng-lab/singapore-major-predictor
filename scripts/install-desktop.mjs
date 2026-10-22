@@ -22,7 +22,8 @@ mkdirSync(join(homedir(), "Applications"), { recursive: true });
 const staged = `${target}.installing-${Date.now()}`;
 const backup = `${target}.previous-${Date.now()}`;
 execFileSync("/usr/bin/ditto", [source, staged]);
-execFileSync("/usr/bin/codesign", ["--verify", "--deep", "--strict", staged]);
+try { execFileSync("/usr/bin/codesign", ["--verify", "--deep", "--strict", staged]); }
+catch (error) { rmSync(staged, {recursive:true, force:true}); throw error; }
 // On the first bundled install, copy the existing database with SQLite's backup API.
 // Later upgrades retain the independent Application Support database.
 const config = JSON.parse(readFileSync(join(source, "Contents/Resources/launcher.json"), "utf8"));
@@ -32,7 +33,7 @@ const newDatabase = join(dataFolder, "major.sqlite3");
 if (config.bundled && existsSync(oldDatabase) && !existsSync(newDatabase)) {
   mkdirSync(dataFolder, { recursive: true });
   const python = join(source, "Contents/Resources/workspace/runtime/python/bin/python3.12");
-  execFileSync(python, ["-c", "import sqlite3,sys; a=sqlite3.connect(sys.argv[1]); b=sqlite3.connect(sys.argv[2]); a.backup(b); b.close(); a.close()", oldDatabase, newDatabase], {env:{...process.env,PYTHONHOME:join(source,"Contents/Resources/workspace/runtime/python"),PYTHONNOUSERSITE:"1"}});
+  execFileSync(python, ["-c", "import sqlite3,sys; a=sqlite3.connect(sys.argv[1]); b=sqlite3.connect(sys.argv[2]); a.backup(b); b.close(); a.close()", oldDatabase, newDatabase], {env:{...process.env,PYTHONHOME:join(source,"Contents/Resources/workspace/runtime/python"),PYTHONNOUSERSITE:"1",PYTHONDONTWRITEBYTECODE:"1"}});
   console.log(`Existing tournament copied to: ${newDatabase}`);
 }
 const hadApp = existsSync(target);

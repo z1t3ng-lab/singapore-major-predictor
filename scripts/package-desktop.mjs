@@ -19,7 +19,7 @@ for (const name of ['api.py','server.mjs','build.mjs']) copyFileSync(resolve(roo
 mkdirSync(join(workspace,'backend/data'),{recursive:true});
 cpSync(resolve(root,'backend/app'),join(workspace,'backend/app'),{recursive:true,verbatimSymlinks:true,filter:p=>!p.includes('__pycache__')});
 for(const name of ['schema.sql','demo_seed.json','migrations']) cpSync(resolve(root,'backend/data',name),join(workspace,'backend/data',name),{recursive:true});
-writeFileSync(join(workspace,'next.config.mjs'),'export default {distDir:".next-desktop",reactStrictMode:true,poweredByHeader:false};\n');
+writeFileSync(join(workspace,'next.config.mjs'),'export default {distDir:".next-desktop",reactStrictMode:true,poweredByHeader:false,experimental:{isrFlushToDisk:false}};\n');
 writeFileSync(join(workspace,'bundled.json'),JSON.stringify({version:'1.2.0',architecture:process.arch}));
 mkdirSync(join(workspace,'runtime'));
 copyFileSync(process.execPath,join(workspace,'runtime/node'));
@@ -37,6 +37,8 @@ writeFileSync(join(resources,'launcher.json'),JSON.stringify({bundled:true,versi
 run('/usr/bin/codesign',['--force','--deep','--sign','-',app]);
 run('/usr/bin/codesign',['--verify','--deep','--strict',app]);
 run(resolve(root,'.venv/bin/python'),['scripts/smoke-desktop.py']);
+// Runtime must not modify sealed bundle resources. Verify again after requests.
+run('/usr/bin/codesign',['--verify','--deep','--strict',app]);
 const staging=resolve(root,'desktop/dist/dmg');
 rmSync(staging,{recursive:true,force:true});mkdirSync(staging);
 run('/usr/bin/ditto',[app,join(staging,'Major Forecast.app')]);
