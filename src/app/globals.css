@@ -775,3 +775,7 @@ h1, h2, h3, p { margin-top: 0; }
   .demo-loader { align-items: stretch; grid-template-columns: 1fr; }
   .demo-loader .import-button { justify-content: space-between; }
 }
+
+.workspace{margin-bottom:32px;padding:24px;border:1px solid #33443d;border-radius:18px;background:#101a19;color:#e2ede8}.workspace nav{display:flex;gap:8px;flex-wrap:wrap;margin:20px 0}.workspace button,.workspace input,.workspace select{padding:10px 14px;margin:5px;border:1px solid #445a50;border-radius:8px;background:#142520;color:#e2ede8}.workspace button{cursor:pointer}.workspace button[aria-pressed=true]{background:#a6efca;color:#14251d}.workspace button:disabled{opacity:.45;cursor:default}.workspace label{display:flex;flex-direction:column;font-size:13px}.workspace-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}.workspace-table{overflow:auto;margin:16px 0;max-height:450px}.workspace table{width:100%;border-collapse:collapse}.workspace td,.workspace th{text-align:left;padding:12px;border-bottom:1px solid #30453b;font-size:13px}.workspace h3,.workspace h4{margin:22px 0 8px}.workspace p{margin:12px 0;color:#b2c7bb}.workspace [role=alert]{color:#ffadad}
+
+.calibration-bars{display:grid;gap:16px;margin:20px 0}.calibration-bars i{display:inline-block;height:8px;background:#42d7be;max-width:70%;border-radius:8px}.calibration-bars .observed{background:#d6ac67}.workspace hr{border:0;border-top:1px solid #293b42;margin:24px 0}.workspace h4{margin:22px 0 10px}

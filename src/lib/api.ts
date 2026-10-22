@@ -85,8 +85,9 @@ export function getMatchDetail(input: {
   });
 }
 
-export async function importFile(file: File, kind: "json" | "teams" | "matches", replaceDemo: boolean) {
+export async function importFile(file: File, kind: "json" | "teams" | "matches", replaceDemo: boolean, expectedStateVersion?: number) {
   const query = new URLSearchParams();
+  if (expectedStateVersion !== undefined) query.set("expected_state_version", String(expectedStateVersion));
   if (replaceDemo) query.set("replace_demo", "true");
   if (kind !== "json") query.set("kind", kind);
   const endpoint = kind === "json" ? "/api/import/json" : "/api/import/csv";
@@ -98,4 +99,8 @@ export async function importFile(file: File, kind: "json" | "teams" | "matches",
   const result = await response.json();
   if (!response.ok) throw new Error(result.detail ?? `Import failed (${response.status})`);
   return result;
+}
+
+export async function workspaceRequest(path: string, init?: RequestInit, apiRoot = false): Promise<any> {
+  return request<any>((apiRoot ? '/api' : '/api/workspace') + path, init);
 }

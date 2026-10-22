@@ -50,16 +50,20 @@ def import_records(
     source_url: str | None,
     event_id: str,
     replace_demo: bool = False,
+    connection_factory=None,
 ) -> dict[str, int]:
     if not isinstance(payload, dict):
         raise HTTPException(422, "JSON import must be an object with arrays such as teams and matches.")
     for key in ALLOWED_RECORDS:
         if key in payload and not isinstance(payload[key], list):
             raise HTTPException(422, f"{key} must be an array")
+    from .workspace import backup
+    if connection_factory is None:
+        backup("before data import")
     now = utc_now()
     inserted = {key: 0 for key in ALLOWED_RECORDS}
     try:
-        with connect() as connection:
+        with (connection_factory or connect)() as connection:
             valid_stage_slugs = {row["slug"] for row in connection.execute("SELECT slug FROM stages WHERE event_id=?", (event_id,))}
             if replace_demo:
                 if not payload.get("teams"):
@@ -85,7 +89,7 @@ def import_records(
                     """INSERT INTO teams(id,name,region,seed,elo_rating,rating_source,synthetic,updated_at)
                        VALUES(?,?,?,?,?,?,0,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,
                        region=excluded.region,seed=excluded.seed,elo_rating=excluded.elo_rating,
-                       rating_source=excluded.rating_source,synthetic=0,updated_at=excluded.updated_at""",
+                       rating_source=excluded.rating_source,synthetic=teams.synthetic,updated_at=excluded.updated_at""",
                     (str(item["id"]), str(item["name"]), item.get("region"), item.get("seed"),
                      item.get("elo_rating"), item.get("rating_source", "user-supplied import"), now),
                 )
@@ -115,6 +119,13 @@ def import_records(
                 )
                 inserted["players"] += 1
             for item in payload.get("matches", []):
+                existing = connection.execute("SELECT * FROM matches WHERE id=?", (item.get('id'),)).fetchone()
+                if existing and (existing['confirmed_winner_id'] or existing['winner_id']):
+                    if (item.get('team_a_id'), item.get('team_b_id')) != (existing['team_a_id'], existing['team_b_id']):
+                        raise ValueError('Cannot change participants of a completed match. Clear the result first.')
+                    actual = existing['confirmed_winner_id'] or existing['winner_id']
+                    if item.get('winner_id') != actual or item.get('status', 'completed') != 'completed' or item.get('best_of') != existing['best_of']:
+                        raise ValueError('This import conflicts with a confirmed result. Use Edit Result or Clear Result first.')
                 required = ("id", "team_a_id", "team_b_id")
                 if any(not item.get(key) for key in required):
                     raise ValueError("Each match needs id, team_a_id, and team_b_id.")
@@ -214,6 +225,7 @@ def import_records(
     except HTTPException:
         raise
     except (sqlite3.Error, KeyError, TypeError, ValueError) as exc:
-        record_import_error(source_url, str(exc))
+        if connection_factory is None:
+            record_import_error(source_url, str(exc))
         raise HTTPException(422, f"Import rejected: {exc}") from exc
     return inserted

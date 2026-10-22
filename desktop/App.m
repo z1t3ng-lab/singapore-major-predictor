@@ -41,9 +41,17 @@
     NSURL *configURL = [NSBundle.mainBundle URLForResource:@"launcher" withExtension:@"json"];
     NSData *data = configURL ? [NSData dataWithContentsOfURL:configURL] : nil;
     self.configuration = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    if ([self.configuration[@"bundled"] boolValue]) {
+        NSMutableDictionary *config = self.configuration.mutableCopy;
+        NSString *workspace = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"workspace"];
+        config[@"projectPath"] = workspace;
+        config[@"nodePath"] = [workspace stringByAppendingPathComponent:@"runtime/node"];
+        config[@"dataPath"] = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/Major Forecast/major.sqlite3"];
+        self.configuration = config;
+    }
     NSString *root = self.configuration[@"projectPath"];
     if (root.length) {
-        NSString *folder = [root stringByAppendingPathComponent:@".local-run"];
+        NSString *folder = self.configuration[@"dataPath"] ? [self.configuration[@"dataPath"] stringByDeletingLastPathComponent] : [root stringByAppendingPathComponent:@".local-run"];
         [NSFileManager.defaultManager createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil];
         self.logURL = [NSURL fileURLWithPath:[folder stringByAppendingPathComponent:@"desktop.log"]];
         // Retain one previous launch without letting logs grow indefinitely.
@@ -160,6 +168,7 @@
     NSMutableDictionary *environment = NSProcessInfo.processInfo.environment.mutableCopy;
     environment[@"PATH"] = [NSString stringWithFormat:@"%@:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin", node.stringByDeletingLastPathComponent];
     [environment removeObjectForKey:@"NODE_OPTIONS"];
+    if (self.configuration[@"dataPath"]) environment[@"MAJOR_DB_PATH"] = self.configuration[@"dataPath"];
     task.environment = environment;
     self.input = [NSPipe pipe]; self.output = [NSPipe pipe];
     task.standardInput = self.input; task.standardOutput = self.output; task.standardError = self.output;
@@ -308,17 +317,17 @@
 - (void)quit:(id)sender { [NSApp terminate:nil]; }
 - (void)showLog:(id)sender { if (self.logURL) [NSWorkspace.sharedWorkspace openURL:self.logURL]; }
 - (void)showData:(id)sender {
-    NSString *path = [self.configuration[@"projectPath"] stringByAppendingPathComponent:@"backend/data/major.sqlite3"];
+    NSString *path = self.configuration[@"dataPath"] ?: [self.configuration[@"projectPath"] stringByAppendingPathComponent:@"backend/data/major.sqlite3"];
     if (path) [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[[NSURL fileURLWithPath:path]]];
 }
 - (void)about:(id)sender {
     NSAlert *alert = [NSAlert new]; alert.messageText = @"Major Forecast";
-    alert.informativeText = @"Version 1.1 · Local macOS app\n\nYour Singapore Major tournament, simulations, and confirmed results in one desktop workspace. Uses the same saved data as the browser app.";
+    alert.informativeText = @"Version 1.2 · Local macOS app\n\nYour Singapore Major tournament, simulations, and confirmed results in one desktop workspace. Includes saved scenarios, profiles, calibration, and recovery backups.";
     [alert beginSheetModalForWindow:self.window completionHandler:nil];
 }
 - (void)guide:(id)sender {
     NSAlert *alert = [NSAlert new]; alert.messageText = @"Your tournament workspace";
-    alert.informativeText = @"Use the sidebar to explore each stage and the playoffs. Import participants in Method & data, then choose Simulate Tournament. Set Result records a finished match and updates the remaining predictions.\n\nCSV and JSON exports open a Save dialog. All confirmed results stay in your local database when you quit.\n\nDouble-click Major Forecast to reopen anytime. The app starts and stops its own services. Keep the project folder in place; it supplies the app’s prediction engine and saved data.";
+    alert.informativeText = @"Use the sidebar to explore each stage and the playoffs. Import participants in Method & data, then choose Simulate Tournament. Set Result records a finished match and updates the remaining predictions.\n\nCSV and JSON exports open a Save dialog. All confirmed results stay in your local database when you quit.\n\nDouble-click Major Forecast to reopen anytime. The app starts and stops its own services. The bundled edition includes its own runtimes. File → Show Saved Data reveals your local database.";
     [alert beginSheetModalForWindow:self.window completionHandler:nil];
 }
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender { return YES; }

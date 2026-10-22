@@ -1,11 +1,12 @@
 // Own both local services for the lifetime of the native app. No fixed ports.
 import { createServer, request as httpRequest } from "node:http";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
-import { root, desktopEnvironment, buildNeeded, sourceHash, recordBuild } from "./build.mjs";
+import { root, packaged, desktopEnvironment, buildNeeded, sourceHash, recordBuild } from "./build.mjs";
 
 process.chdir(root);
 Object.assign(process.env, desktopEnvironment);
@@ -99,7 +100,16 @@ function proxyAPI(req, res) {
 }
 
 try {
-  const python = resolve(root, ".venv/bin/python");
+  const python = resolve(root, packaged ? "runtime/python/bin/python3.12" : ".venv/bin/python");
+  if (packaged) {
+    process.env.PYTHONHOME = resolve(root, "runtime/python");
+    process.env.PYTHONNOUSERSITE = "1";
+    if (existsSync("/etc/ssl/cert.pem")) process.env.SSL_CERT_FILE = "/etc/ssl/cert.pem";
+    process.env.PYTHONDONTWRITEBYTECODE = "1";
+    delete process.env.PYTHONPATH;
+    process.env.MAJOR_DB_PATH ||= resolve(homedir(), "Library/Application Support/Major Forecast/major.sqlite3");
+    mkdirSync(resolve(process.env.MAJOR_DB_PATH, ".."), { recursive: true });
+  }
   if (!existsSync(python)) throw new Error("The Python environment is missing. Restore this project's .venv using the README setup steps.");
   if (!existsSync(resolve(root, "node_modules/next"))) throw new Error("The web dependencies are missing. Install this project's dependencies using the README setup steps.");
   await prepareBuild();

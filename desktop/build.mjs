@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+export const packaged = existsSync(resolve(root, "bundled.json"));
 export const desktopEnvironment = {
   ...process.env,
   NODE_ENV: "production",
@@ -28,6 +29,7 @@ export function sourceHash() {
 }
 
 export function buildNeeded() {
+  if (packaged) return false;
   return !existsSync(resolve(root, ".next-desktop/BUILD_ID")) || !existsSync(manifest) || readFileSync(manifest, "utf8") !== sourceHash();
 }
 

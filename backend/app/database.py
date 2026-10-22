@@ -37,6 +37,7 @@ def initialize_database() -> None:
             (2, "002_map_vetoes.sql"),
             (3, "003_roster_availability.sql"),
             (4, "004_confirmed_match_results.sql"),
+            (5, "005_saved_scenarios.sql"),
         ):
             migration_path = DATA_DIR / "migrations" / filename
             if version == 3:

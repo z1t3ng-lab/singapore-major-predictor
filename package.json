@@ -8,7 +8,8 @@
     "start": "next start",
     "test": "vitest run",
     "desktop:build": "node scripts/build-desktop.mjs",
-    "desktop:install": "node scripts/install-desktop.mjs"
+    "desktop:install": "node scripts/install-desktop.mjs",
+    "desktop:package": "node scripts/package-desktop.mjs"
   },
   "dependencies": {
     "next": "16.4.1",

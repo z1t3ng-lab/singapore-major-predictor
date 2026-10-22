@@ -4,9 +4,12 @@ import React, { FormEvent, useEffect, useMemo, useState } from "react";
 import { MatchCard } from "@/components/MatchCard";
 import { ResultDialog, type ResultAction } from "@/components/ResultDialog";
 import { SwissOverview } from "@/components/SwissOverview";
-import { getMatchDetail, getOverview, getTeams, importFile, loadDemoDataset, runSimulation } from "@/lib/api";
+import { getMatchDetail, getOverview, getTeams, importFile, loadDemoDataset, runSimulation, workspaceRequest } from "@/lib/api";
 import { exportRows, percentage, rowsToCsv, scenarioChanged, setScenarioWinner } from "@/lib/helpers";
 import type { Overview, PredictedMatch, Team, TournamentResult } from "@/lib/types";
+
+import { ChangeSummary } from "@/components/ChangeSummary";
+import { Workspace } from "@/components/Workspace";
 
 type ViewKey = "overview" | "stage1" | "stage2" | "stage3" | "playoffs" | "teams" | "data";
 
@@ -60,6 +63,7 @@ function projectedMatchesFor(result: TournamentResult) {
 }
 
 export default function Home() {
+  const [changePair, setChangePair] = useState<{before:string;after:string}|null>(null);
   const [view, setView] = useState<ViewKey>("overview");
   const [overview, setOverview] = useState<Overview | null>(null);
   const [teams, setTeams] = useState<Team[]>([]);
@@ -194,6 +198,7 @@ export default function Home() {
   }
 
   function onMatchResultSaved(response: { message: string; result: TournamentResult; invalidated_result_ids: string[] }) {
+    if (result) setChangePair({before:result.run_id,after:response.result.run_id});
     setResult(response.result);
     setAppliedOverrides(response.result.scenario.overrides);
     setDraftOverrides(response.result.scenario.overrides);
@@ -227,9 +232,13 @@ export default function Home() {
       return;
     }
     setImportError("");
-    setImportStatus("Importing records…");
+    setImportStatus("Validating import preview…");
     try {
-      const response = await importFile(file, importKind, replaceDemo);
+      const preview = await workspaceRequest('/preview-file', {method:'POST', body:JSON.stringify({text:await file.text(),kind:importKind,replace_demo:replaceDemo})});
+      const counts = Object.entries(preview.counts).filter(([,n])=>n).map(([k,n])=>`${n} ${k}`).join(', ');
+      if (!window.confirm(`Import preview: ${counts || 'no records'}.\n${preview.warnings.join('\n')}\nSave these records? A recovery backup will be created.`)) {setImportStatus('Import cancelled. No records changed.');return;}
+      const response = await importFile(file, importKind, replaceDemo, preview.state_version);
+      setResult(null); setChangePair(null);
       setImportStatus(`Imported: ${Object.entries(response.records_imported as Record<string, number>).filter(([, count]) => count).map(([key, count]) => `${count} ${key}`).join(", ") || "no new rows"}.`);
       const refreshed = await refreshBaseData();
       setDraftOverrides({});
@@ -380,10 +389,12 @@ export default function Home() {
 
           {error && <div className="error-banner" role="alert"><b>Something needs attention</b><span>{error}</span>{!overview && <code>Start the API from backend/ and the Next.js app with npm run dev.</code>}</div>}
 
+          {changePair && <ChangeSummary before={changePair.before} after={changePair.after} teams={teams} />}
           {loading && <div className="loading-panel"><span className="spinner" /><b>Loading tournament model</b><span>Connecting to the local prediction service…</span></div>}
 
           {!loading && overview && (
             <>
+              {view === "data" && <Workspace teams={teams} result={result} onRun={r=>{setResult(r);setAppliedOverrides(r.scenario.overrides);setDraftOverrides(r.scenario.overrides);}} onChanged={() => { setResult(null); setChangePair(null); setDraftOverrides({}); setAppliedOverrides({}); void refreshBaseData(); }} />}
               {view === "data" && <DataView
                 overview={overview} result={result} importKind={importKind} setImportKind={setImportKind}
                 replaceDemo={replaceDemo} setReplaceDemo={setReplaceDemo} onImport={onImport}

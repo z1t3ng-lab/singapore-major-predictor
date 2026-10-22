@@ -44,6 +44,13 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def serialize_workspace(request: Request, call_next):
+    from .workspace_lock import workspace_lock
+    async with workspace_lock():
+        return await call_next(request)
+
+
 class SimulationRequest(BaseModel):
     simulations: int = Field(default=2500, ge=1, le=10000)
     seed: int = Field(default=73, ge=0, le=2**31 - 1)
@@ -561,6 +568,8 @@ def simulate(request: SimulationRequest) -> dict[str, Any]:
 
 
 def _mutate_match_result(match_id: str, request: MatchResultRequest, clear: bool) -> dict[str, Any]:
+    from .workspace import backup
+    backup("before match result change")
     with connect() as connection:
         connection.execute("BEGIN IMMEDIATE")
         latest_run = connection.execute(
@@ -706,24 +715,30 @@ def clear_match_result(match_id: str, request: MatchResultRequest) -> dict[str, 
 
 
 @app.post("/api/import/json")
-async def import_json(request: Request, replace_demo: bool = Query(default=False)) -> dict[str, Any]:
+async def import_json(request: Request, replace_demo: bool = Query(default=False), expected_state_version: int | None = None) -> dict[str, Any]:
     try:
         payload = await request.json()
     except Exception as exc:
         record_import_error(request.headers.get("x-source-url"), "Request body is not valid JSON")
         raise HTTPException(400, "Request body is not valid JSON") from exc
+    with connect() as connection:
+        if expected_state_version is not None and state_version(connection) != expected_state_version:
+            raise HTTPException(409, "Data changed since preview. Preview the import again.")
     counts = import_records(payload, request.headers.get("x-source-url"), EVENT_ID, replace_demo)
     return {"ok": True, "records_imported": counts, "data_source": "user-supplied import"}
 
 
 @app.post("/api/import/csv")
-async def import_csv(request: Request, kind: str = Query(..., pattern="^(teams|matches)$"), replace_demo: bool = Query(default=False)) -> dict[str, Any]:
+async def import_csv(request: Request, kind: str = Query(..., pattern="^(teams|matches)$"), replace_demo: bool = Query(default=False), expected_state_version: int | None = None) -> dict[str, Any]:
     try:
         text = (await request.body()).decode("utf-8-sig")
         payload = csv_payload(text, kind)
     except (UnicodeDecodeError, ValueError, TypeError) as exc:
         record_import_error(request.headers.get("x-source-url"), str(exc))
         raise HTTPException(422, f"CSV import rejected: {exc}") from exc
+    with connect() as connection:
+        if expected_state_version is not None and state_version(connection) != expected_state_version:
+            raise HTTPException(409, "Data changed since preview. Preview the import again.")
     counts = import_records(payload, request.headers.get("x-source-url"), EVENT_ID, replace_demo)
     return {"ok": True, "records_imported": counts, "data_source": "user-supplied import"}
 
@@ -735,3 +750,7 @@ def latest_prediction() -> dict[str, Any]:
         if not row:
             raise HTTPException(404, "No prediction run is stored yet")
         return dict(row)
+
+
+from .workspace import router as workspace_router
+app.include_router(workspace_router)
