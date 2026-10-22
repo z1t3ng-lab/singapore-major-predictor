@@ -1,5 +1,6 @@
 node_modules/
 .next/
+.next-desktop/
 .venv/
 __pycache__/
 .pytest_cache/
@@ -7,6 +8,7 @@ __pycache__/
 coverage/
 dist/
 .DS_Store
+.local-run/
 
 # Local environment settings (keep the shareable template)
 .env

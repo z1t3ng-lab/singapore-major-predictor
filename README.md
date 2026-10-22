@@ -25,6 +25,28 @@ For a production-mode local run, build once with `npm run build` and start with 
 
 The API creates `backend/data/major.sqlite3` on first startup with the event and stage configuration, but no team identities. On the Method & Data page, either import the official entrant file when it is available or select **Load synthetic demo tournament** to explore the simulator. The `/api/demo` endpoint only loads into an empty dataset. A prior automatically seeded demo-only database is migrated back to the empty participant state; an explicitly loaded demo remains in place across restarts. To use another database location, set `MAJOR_DB_PATH` before starting the API. Copy `.env.example` to `.env.local` to change the browser-facing API URL.
 
+### macOS desktop app
+
+**Double-click Major Forecast on your Desktop.** The full tournament interface opens in its own resizable macOS window. There is no Terminal window and no need to start either server yourself. You can also open `~/Applications/Major Forecast.app`, or drag it to the Dock.
+
+One-time installation from the project folder, after the Quick start dependencies are installed (macOS 13+, Node.js 20.9+, Python 3.11+, and Apple Command Line Tools):
+
+```bash
+npm run desktop:build
+npm run desktop:install
+```
+
+- All existing tournament views, Swiss overviews, simulations, and Set Result controls work inside the desktop window. Imports use a native file picker; CSV/JSON exports and templates use a native Save dialog.
+- The desktop app uses the **same `backend/data/major.sqlite3` database** as the browser app. Installation and reopening do not replace imported teams or confirmed results. No synthetic teams are loaded automatically.
+- It starts its own production interface on an available loopback port. The prediction API uses a private Unix socket, with requests forwarded through the desktop's own origin. It can run alongside other apps using ports 3000 and 8000. Cross-site requests and unexpected Host headers are rejected.
+- Closing the window or choosing **Major Forecast → Quit** stops the app's services. A parent-pipe watchdog also shuts down the services after an unexpected app exit. Existing manually started browser servers are left alone.
+- **View → Reload** (⌘R), zoom controls, and standard copy/paste shortcuts are available. **File → Show Saved Data** reveals the database. **Help → Show Startup Log** opens `.local-run/desktop.log`; one previous launch is kept in `desktop.previous.log`. Startup failures offer **Try Again**.
+- The desktop production build is stored separately in `.next-desktop/`. On the first opening after interface source changes, it rebuilds automatically with a visible progress message. Ordinary openings reuse that build.
+
+This is a local desktop app connected to this checkout, like the InternshipHQ desktop app. **Keep the project folder, `.venv`, `node_modules`, and installed Node.js/Python runtimes in place.** The `.app` is not a standalone installer for another Mac. If you move the project or update the native wrapper, repeat the two installation commands from the new location. The installer checks app identities and preserves the previous launcher before replacing it. The app is signed locally; it is not an Apple-notarized distribution.
+
+Native window code is in `desktop/App.m`; `desktop/server.mjs` owns the web/API lifecycle and local proxy; `desktop/api.py` hosts the existing FastAPI engine. No database migration or model changes are needed for desktop access. The old `scripts/build_macos_app.sh` command remains as a compatibility shortcut for building and installing.
+
 ### Docker Compose (optional)
 
 ```bash

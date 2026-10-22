@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build --webpack",
     "start": "next start",
-    "test": "vitest run"
+    "test": "vitest run",
+    "desktop:build": "node scripts/build-desktop.mjs",
+    "desktop:install": "node scripts/install-desktop.mjs"
   },
   "dependencies": {
     "next": "16.4.1",

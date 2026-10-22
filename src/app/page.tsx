@@ -45,8 +45,11 @@ function downloadFile(name: string, contents: string, type: string) {
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
   link.download = name;
+  document.body.appendChild(link);
   link.click();
-  URL.revokeObjectURL(link.href);
+  link.remove();
+  // WebKit hands downloads to the native Save dialog asynchronously.
+  window.setTimeout(() => URL.revokeObjectURL(link.href), 60_000);
 }
 
 function projectedMatchesFor(result: TournamentResult) {
